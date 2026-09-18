@@ -1,0 +1,40 @@
+# 数据契约
+
+## 临床事件
+
+所有输入统一为事件信封：
+
+```json
+{
+  "event_id": "evt-1001",
+  "event_type": "vital_signs",
+  "occurred_at": "2026-09-09T08:30:00Z",
+  "tenant_id": "group-demo",
+  "facility_id": "hospital-01",
+  "patient_id": "pat-001",
+  "encounter_id": "enc-001",
+  "actor": "system",
+  "payload": {
+    "age": 67,
+    "heart_rate": 118,
+    "respiratory_rate": 28,
+    "systolic_bp": 94,
+    "temperature": 38.5,
+    "spo2": 91,
+    "wbc": 16.2,
+    "creatinine": 1.8,
+    "lactate": 2.7,
+    "prior_admissions_30d": 1
+  }
+}
+```
+
+`payload` 的字段允许逐步补齐；评分前会按 `occurred_at` 合并该就诊截至评分时点的最近有效值，不会读取未来事件。响应和评分审计会显式返回 `missing_features`，便于人工判断数据完整性。重复且内容一致的 `event_id` 会被幂等忽略；同一个 `event_id` 携带不同就诊或内容会返回冲突。未知就诊、患者与院区不匹配或超范围数值会拒绝。生产接入必须补充单位、参考范围、采集设备和数据质量状态。
+
+生产事件还应携带 `source_system`、`source_record_id`、`unit` 和 `quality_status`，用于数据血缘、去重、单位换算和质量门控；当前 API 已保留这些字段。
+
+事件时间最多允许比服务端当前时间提前 `MAX_EVENT_FUTURE_SKEW_MINUTES` 分钟（默认 15 分钟），用于容忍院内时钟偏差并避免明显的未来数据进入实时风险队列。
+
+## 风险分数
+
+风险响应包含 `target_id`、`model_version`、`score`、`band`、`top_factors`、`missing_features`、`scored_at`、`status` 和 `human_review`。`target_id` 为 `deterioration_24h` 或 `readmission_30d`；`band` 为 `low`、`medium`、`high`、`critical`；处置状态为 `new`、`acknowledged`、`in_progress`、`resolved`。一次事件接入会返回两个独立目标的 `scores` 映射，并保留 `score` 作为 24 小时恶化目标的兼容字段。

@@ -1,0 +1,103 @@
+services:
+  api:
+    build: .
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      STORE_PATH: ${STORE_PATH:-/app/data/store.db}
+      MODEL_PATH: ${MODEL_PATH:-/app/model/model.json}
+      READMISSION_MODEL_PATH: ${READMISSION_MODEL_PATH:-/app/model/readmission_model.json}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://medintel:medintel@postgres:5432/medintel}
+      EVENT_BACKEND: ${EVENT_BACKEND:-sync}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_STREAM: ${REDIS_STREAM:-medintel:clinical-events}
+      REDIS_DEAD_LETTER_STREAM: ${REDIS_DEAD_LETTER_STREAM:-medintel:clinical-events:dead-letter}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      MODEL_SIGNATURE_REQUIRED: ${MODEL_SIGNATURE_REQUIRED:-false}
+      MODEL_SIGNATURE_PATH: ${MODEL_SIGNATURE_PATH:-}
+      MODEL_FALLBACK_ENABLED: ${MODEL_FALLBACK_ENABLED:-false}
+      DEMO_AUTH_ENABLED: ${DEMO_AUTH_ENABLED:-true}
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_ROLE_CLAIM: ${OIDC_ROLE_CLAIM:-roles}
+      OIDC_TENANT_CLAIM: ${OIDC_TENANT_CLAIM:-tenant_id}
+      OIDC_FACILITY_CLAIM: ${OIDC_FACILITY_CLAIM:-facility_id}
+    ports:
+      - "8000:8000"
+    volumes:
+      - medintel_data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build: .
+    command: python -m app.worker
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      STORE_PATH: ${STORE_PATH:-/app/data/store.db}
+      MODEL_PATH: ${MODEL_PATH:-/app/model/model.json}
+      READMISSION_MODEL_PATH: ${READMISSION_MODEL_PATH:-/app/model/readmission_model.json}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://medintel:medintel@postgres:5432/medintel}
+      SCORE_INTERVAL_SECONDS: ${SCORE_INTERVAL_SECONDS:-300}
+      EVENT_BACKEND: ${EVENT_BACKEND:-sync}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_STREAM: ${REDIS_STREAM:-medintel:clinical-events}
+      REDIS_DEAD_LETTER_STREAM: ${REDIS_DEAD_LETTER_STREAM:-medintel:clinical-events:dead-letter}
+      REDIS_CONSUMER_GROUP: ${REDIS_CONSUMER_GROUP:-medintel-workers}
+      REDIS_CONSUMER_NAME: ${REDIS_CONSUMER_NAME:-worker-1}
+      REDIS_CLAIM_IDLE_MS: ${REDIS_CLAIM_IDLE_MS:-60000}
+      REDIS_MAX_DELIVERY_ATTEMPTS: ${REDIS_MAX_DELIVERY_ATTEMPTS:-5}
+      MODEL_SIGNATURE_REQUIRED: ${MODEL_SIGNATURE_REQUIRED:-false}
+      MODEL_SIGNATURE_PATH: ${MODEL_SIGNATURE_PATH:-}
+      MODEL_FALLBACK_ENABLED: ${MODEL_FALLBACK_ENABLED:-false}
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_ROLE_CLAIM: ${OIDC_ROLE_CLAIM:-roles}
+      OIDC_TENANT_CLAIM: ${OIDC_TENANT_CLAIM:-tenant_id}
+      OIDC_FACILITY_CLAIM: ${OIDC_FACILITY_CLAIM:-facility_id}
+    volumes:
+      - medintel_data:/app/data
+    depends_on:
+      api:
+        condition: service_healthy
+
+  postgres:
+    profiles: ["future-infra"]
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: medintel
+      POSTGRES_USER: medintel
+      POSTGRES_PASSWORD: medintel
+    volumes:
+      - medintel_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medintel -d medintel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    profiles: ["future-infra"]
+    image: redis:7-alpine
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    profiles: ["registry"]
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /mlruns
+    ports:
+      - "5000:5000"
+    volumes:
+      - medintel_mlruns:/mlruns
+
+volumes:
+  medintel_data:
+  medintel_postgres:
+  medintel_mlruns:

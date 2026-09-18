@@ -1,0 +1,1 @@
+"""MedIntel application package."""

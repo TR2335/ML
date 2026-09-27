@@ -146,7 +146,7 @@ def authenticate(authorization: str | None, settings: Settings) -> Principal:
 
 
 def require_permission(permission: str, settings: Settings):
-    async def dependency(authorization: str | None = Header(default=None)) -> Principal:
+    def dependency(authorization: str | None = Header(default=None)) -> Principal:
         principal = authenticate(authorization, settings)
         if permission not in ROLE_PERMISSIONS.get(principal.role, set()):
             raise HTTPException(status_code=403, detail="insufficient_role")

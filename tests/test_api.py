@@ -292,3 +292,31 @@ def test_static_app_js_is_served(tmp_path):
         response = client.get("/static/app.js")
         assert response.status_code == 200
         assert "const safe =" in response.text
+
+
+def test_auth_dependency_runs_in_threadpool(tmp_path, monkeypatch):
+    import asyncio as _asyncio
+
+    from app import security
+
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    observed: dict[str, bool] = {}
+    original = security.authenticate
+
+    def spy(authorization, settings):
+        try:
+            _asyncio.get_running_loop()
+            observed["in_event_loop"] = True
+        except RuntimeError:
+            observed["in_event_loop"] = False
+        return original(authorization, settings)
+
+    monkeypatch.setattr(security, "authenticate", spy)
+    with TestClient(application) as client:
+        response = client.get(
+            "/api/patients", headers={"Authorization": "Bearer demo-clinician-token"}
+        )
+    assert response.status_code == 200
+    assert observed["in_event_loop"] is False

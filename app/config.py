@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     model_fallback_enabled: bool = False
     model_version: str = "baseline-logistic-v1"
     score_interval_seconds: int = 300
+    reconcile_interval_cycles: int = 20
     max_event_future_skew_minutes: int = 15
     cors_origins: str = "http://localhost:8000"
     demo_auth_enabled: bool = True

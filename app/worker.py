@@ -44,6 +44,36 @@ def rescore_once(store: Store | None = None, engine: RiskEngine | None = None) -
             store.close()
 
 
+def reconcile(store: Store, engines: dict[TargetId, RiskEngine]) -> int:
+    """Backfill missing or stale scores from durable events without regressing newer ones."""
+    count = 0
+    for tenant_id, facility_id, encounter_id, latest in store.encounter_latest_event_times():
+        scores = store.get_scores(encounter_id, tenant_id, facility_id)
+        stale = False
+        for target_id in engines:
+            score = scores.get(target_id)
+            if score is None:
+                stale = True
+                break
+            effective = score.as_of or score.scored_at
+            if effective < latest:
+                stale = True
+                break
+        if not stale:
+            continue
+        events = store.events_for(encounter_id, tenant_id, facility_id)
+        if not events:
+            continue
+        snapshot = store.feature_snapshot(encounter_id, tenant_id, facility_id, as_of=latest)
+        scoring_event = max(events, key=lambda item: item.occurred_at).model_copy(
+            update={"payload": snapshot}
+        )
+        for target_engine in engines.values():
+            store.upsert_score(target_engine.score(scoring_event))
+        count += 1
+    return count
+
+
 def score_event(store: Store, engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> None:
     """Score one durable event at its event time and persist every target."""
     snapshot = store.feature_snapshot(
@@ -97,6 +127,7 @@ def run_redis_worker() -> None:
         consumer=settings.redis_consumer_name,
         dead_letter_stream=settings.redis_dead_letter_stream,
     )
+    cycle = 0
     try:
         while True:
             try:
@@ -107,6 +138,9 @@ def run_redis_worker() -> None:
                     settings.redis_claim_idle_ms,
                     settings.redis_max_delivery_attempts,
                 )
+                cycle += 1
+                if cycle % max(settings.reconcile_interval_cycles, 1) == 0:
+                    reconcile(store, engines)
             except Exception:
                 # Redis outages should trigger reconnect/backoff rather than
                 # silently stopping the worker process.

@@ -5,7 +5,7 @@ SQLite development store. PostgreSQL provides connection pooling, JSONB,
 transaction isolation and durable backups for the hospital deployment.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -181,6 +181,21 @@ class PostgresStore:
                 ).fetchone()
                 is not None
             )
+
+    def encounter_latest_event_times(self) -> list[tuple[str, str, str, datetime]]:
+        """Return (tenant_id, facility_id, encounter_id, max occurred_at) per encounter."""
+        with self.pool.connection() as connection:
+            rows = connection.execute(
+                "SELECT tenant_id, facility_id, encounter_id, MAX(occurred_at) AS latest"
+                " FROM events GROUP BY tenant_id, facility_id, encounter_id"
+            ).fetchall()
+        latest_times = []
+        for row in rows:
+            latest = row["latest"]
+            if latest.tzinfo is None:
+                latest = latest.replace(tzinfo=UTC)
+            latest_times.append((row["tenant_id"], row["facility_id"], row["encounter_id"], latest))
+        return latest_times
 
     def get_event(self, event_id: str, tenant_id: str) -> ClinicalEvent | None:
         with self.pool.connection() as connection:

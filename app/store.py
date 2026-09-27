@@ -316,6 +316,23 @@ class Store:
                 is not None
             )
 
+    def encounter_latest_event_times(self) -> list[tuple[str, str, str, datetime]]:
+        """Return (tenant_id, facility_id, encounter_id, max occurred_at) per encounter."""
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT tenant_id, facility_id, encounter_id, MAX(occurred_at) AS latest"
+                " FROM events GROUP BY tenant_id, facility_id, encounter_id"
+            ).fetchall()
+        return [
+            (
+                row["tenant_id"],
+                row["facility_id"],
+                row["encounter_id"],
+                datetime.fromisoformat(row["latest"]),
+            )
+            for row in rows
+        ]
+
     def get_event(self, event_id: str, tenant_id: str) -> ClinicalEvent | None:
         """Return a tenant-scoped event by id for safe idempotency conflict checks."""
         with self._lock:

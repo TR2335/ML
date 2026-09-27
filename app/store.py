@@ -454,34 +454,42 @@ class Store:
         return {score.target_id: score for score in scores}
 
     def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> str:
-        with self._lock, self.connection:
-            previous = self.get_score(
-                score.encounter_id,
-                score.tenant_id,
-                score.facility_id,
-                target_id=score.target_id,
-            )
-            if previous:
-                # A legacy row without as_of has unknown staleness: never block
-                # rescoring on it (preserve_review still guards human review).
-                if previous.as_of is not None:
-                    new_as_of = score.as_of or score.scored_at
-                    if new_as_of < previous.as_of:
-                        return "skipped_stale"
-                score.score_id = previous.score_id
-                if preserve_review and previous.status != "new":
-                    score.status = previous.status
-                    score.human_review = previous.human_review
-            self.connection.execute(
-                "INSERT INTO scores(encounter_id, tenant_id, facility_id, data_json, target_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, encounter_id, target_id) DO UPDATE SET facility_id=excluded.facility_id, data_json=excluded.data_json",
-                (
+        with self._lock:
+            # BEGIN IMMEDIATE 升级为写事务，使跨进程的读-改-写原子化。
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                previous = self.get_score(
                     score.encounter_id,
                     score.tenant_id,
                     score.facility_id,
-                    self._json(score.model_dump(mode="json")),
-                    score.target_id,
-                ),
-            )
+                    target_id=score.target_id,
+                )
+                if previous:
+                    # A legacy row without as_of has unknown staleness: never block
+                    # rescoring on it (preserve_review still guards human review).
+                    if previous.as_of is not None:
+                        new_as_of = score.as_of or score.scored_at
+                        if new_as_of < previous.as_of:
+                            self.connection.commit()
+                            return "skipped_stale"
+                    score.score_id = previous.score_id
+                    if preserve_review and previous.status != "new":
+                        score.status = previous.status
+                        score.human_review = previous.human_review
+                self.connection.execute(
+                    "INSERT INTO scores(encounter_id, tenant_id, facility_id, data_json, target_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(tenant_id, encounter_id, target_id) DO UPDATE SET facility_id=excluded.facility_id, data_json=excluded.data_json",
+                    (
+                        score.encounter_id,
+                        score.tenant_id,
+                        score.facility_id,
+                        self._json(score.model_dump(mode="json")),
+                        score.target_id,
+                    ),
+                )
+                self.connection.commit()
+            except BaseException:
+                self.connection.rollback()
+                raise
         return "applied"
 
     def add_audit(self, event: AuditEvent) -> None:

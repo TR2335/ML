@@ -323,6 +323,81 @@ def test_event_schema_migration_preserves_rows(tmp_path):
     reopened.close()
 
 
+def test_upsert_score_uses_immediate_transaction(tmp_path):
+    store = Store(str(tmp_path / "store.db"))
+    store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])
+    statements: list[str] = []
+    store.connection.set_trace_callback(statements.append)
+    try:
+        result = store.upsert_score(
+            RiskScore(
+                patient_id="pat-1",
+                encounter_id="enc-1",
+                model_version="test",
+                score=0.5,
+                band="medium",
+            )
+        )
+    finally:
+        store.connection.set_trace_callback(None)
+    assert result == "applied"
+    normalized = [s.strip().upper() for s in statements]
+    assert any(s.startswith("BEGIN IMMEDIATE") for s in normalized), normalized
+
+
+def test_concurrent_review_and_score_both_kept(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = Store(str(tmp_path / "store.db"))
+    store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])
+    base = {"patient_id": "pat-1", "encounter_id": "enc-1", "model_version": "test"}
+    # 初始分数：as_of 取旧时刻，保证并发 rescore 必然"更新"而非 stale
+    store.upsert_score(
+        RiskScore(
+            **base,
+            score=0.1,
+            band="low",
+            as_of=datetime(2026, 1, 1, 6, 0, tzinfo=UTC),
+        )
+    )
+
+    def review_once() -> None:
+        score = store.get_score("enc-1", "group-demo", "hospital-01")
+        score.status = "resolved"
+        score.human_review = "已处置"
+        store.upsert_score(score, preserve_review=False)
+
+    def rescore() -> str:
+        return store.upsert_score(
+            RiskScore(
+                **base,
+                score=0.9,
+                band="critical",
+                as_of=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(fn) for fn in (review_once, rescore) * 10]
+        for future in futures:
+            future.result()
+
+    # 全行写入下最终 score 取决于交错顺序（review 可能携带旧分数最后写入）——
+    # 用一次确定性的最终 rescore 收敛分数字段；preserve_review 必须保住并发写入的复核状态。
+    store.upsert_score(
+        RiskScore(
+            **base,
+            score=0.9,
+            band="critical",
+            as_of=datetime(2026, 1, 1, 13, 0, tzinfo=UTC),
+        )
+    )
+    final = store.get_score("enc-1", "group-demo", "hospital-01")
+    assert final.status == "resolved"
+    assert final.human_review == "已处置"
+    assert final.score == 0.9
+
+
 def test_target_scoped_scores_are_independent(tmp_path):
     store = Store(str(tmp_path / "store.db"))
     store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])

@@ -1,13 +1,13 @@
-import time
 import logging
+import time
 
 from .config import get_settings
 from .domain import ClinicalEvent, TargetId
-from .risk import RiskEngine
-from .store import Store
-from .storage import create_store
 from .messaging import RedisStreamConsumer
 from .observability import metrics
+from .risk import RiskEngine
+from .storage import create_store
+from .store import Store
 
 LOGGER = logging.getLogger(__name__)
 

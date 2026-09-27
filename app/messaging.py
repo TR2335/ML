@@ -30,7 +30,11 @@ class RedisStreamPublisher:
         )
 
     def health(self) -> bool:
-        return bool(self.client.ping())
+        """Ping the broker; every client failure marks the bus unhealthy."""
+        try:
+            return bool(self.client.ping())
+        except Exception:  # noqa: BLE001 - any redis failure means "unhealthy", never raise
+            return False
 
 
 class RedisStreamConsumer:
@@ -85,8 +89,8 @@ class RedisStreamConsumer:
         for _, messages in records:
             for message_id, values in messages:
                 try:
-                    event = ClinicalEvent.model_validate(json.loads(values["event"]))
-                except Exception as exc:
+                    event = ClinicalEvent.model_validate(json.loads(values.get("event", "")))
+                except (TypeError, ValueError) as exc:
                     # A malformed envelope can never succeed on retry. Move it
                     # to the dead-letter stream and ACK it so the worker keeps
                     # processing healthy events.

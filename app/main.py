@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
-from time import monotonic
 from pathlib import Path
+from time import monotonic
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,11 +8,11 @@ from fastapi.responses import FileResponse
 
 from .api import build_router
 from .config import get_settings
+from .observability import metrics
 from .risk import RiskEngine
 from .security import validate_auth_configuration
 from .storage import create_store
 from .synthetic import demo_patients
-from .observability import metrics
 
 
 def create_app(settings_override=None, store_override=None, engine_override=None) -> FastAPI:

@@ -1,14 +1,14 @@
-import json
 import hashlib
 import hmac
+import json
 import logging
 import math
 from pathlib import Path
 
 from .config import Settings
+from .degrade import fallback_score
 from .domain import ClinicalEvent, RiskFactor, RiskScore, TargetId
 from .synthetic import FEATURES
-from .degrade import fallback_score
 
 DEFAULT_WEIGHTS = {
     "age": 0.012,

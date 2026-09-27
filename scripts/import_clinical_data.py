@@ -32,7 +32,7 @@ def load_records(path: Path) -> list[dict[str, Any]]:
         except json.JSONDecodeError as exc:
             raise ValueError(f"{path}:{line_number} is not valid JSON") from exc
         if not isinstance(value, dict):
-            raise ValueError(f"{path}:{line_number} must be an object")
+            raise TypeError(f"{path}:{line_number} must be an object")
         records.append(value)
     return records
 

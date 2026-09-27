@@ -9,9 +9,9 @@ group columns support temporal holdout and subgroup reporting.
 import argparse
 import csv
 import json
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
 
 from app.config import Settings
 from app.domain import ClinicalEvent

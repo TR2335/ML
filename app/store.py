@@ -1,8 +1,8 @@
 import json
 import sqlite3
 from datetime import datetime
-from threading import RLock
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from .domain import AuditEvent, ClinicalEvent, RiskScore, TargetId

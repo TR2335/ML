@@ -38,10 +38,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
         degraded = [target for target, target_engine in engines.items() if target_engine.degraded]
         event_bus_ok = True
         if settings.event_backend == "redis":
-            try:
-                event_bus_ok = publisher.health()
-            except Exception:
-                event_bus_ok = False
+            event_bus_ok = publisher.health()
         return {
             "status": "degraded" if degraded or not event_bus_ok else "ok",
             "environment": settings.app_env,

@@ -51,7 +51,7 @@ def read_manifest(path: Path) -> dict[str, Any]:
         return {"schema_version": 1, "models": {}}
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or not isinstance(value.get("models", {}), dict):
-        raise ValueError("registry manifest is invalid")
+        raise TypeError("registry manifest is invalid")
     return value
 
 

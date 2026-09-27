@@ -304,11 +304,15 @@ class PostgresStore:
         scores = [RiskScore.model_validate(row["data_json"]) for row in rows]
         return {score.target_id: score for score in scores}
 
-    def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> None:
+    def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> str:
         previous = self.get_score(
             score.encounter_id, score.tenant_id, score.facility_id, score.target_id
         )
         if previous:
+            new_as_of = score.as_of or score.scored_at
+            old_as_of = previous.as_of or previous.scored_at
+            if new_as_of < old_as_of:
+                return "skipped_stale"
             score.score_id = previous.score_id
             if preserve_review and previous.status != "new":
                 score.status = previous.status
@@ -329,6 +333,7 @@ class PostgresStore:
                     score.target_id,
                 ),
             )
+        return "applied"
 
     def add_audit(self, event: AuditEvent) -> None:
         with self.pool.connection() as connection:

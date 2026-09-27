@@ -187,6 +187,29 @@ def test_tenant_scoped_encounters_do_not_overwrite_each_other(tmp_path):
     )
 
 
+def test_stale_score_does_not_overwrite(tmp_path):
+    store = Store(str(tmp_path / "store.db"))
+    store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])
+    base = {"patient_id": "pat-1", "encounter_id": "enc-1", "model_version": "test"}
+    newer = RiskScore(
+        **base,
+        score=0.8,
+        band="critical",
+        as_of=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+    older = RiskScore(
+        **base,
+        score=0.2,
+        band="low",
+        as_of=datetime(2026, 1, 1, 6, 0, tzinfo=UTC),
+    )
+    assert store.upsert_score(newer) == "applied"
+    assert store.upsert_score(older) == "skipped_stale"
+    result = store.get_score("enc-1", "group-demo", "hospital-01")
+    assert result.score == 0.8
+    assert result.band == "critical"
+
+
 def test_target_scoped_scores_are_independent(tmp_path):
     store = Store(str(tmp_path / "store.db"))
     store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])

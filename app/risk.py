@@ -226,6 +226,7 @@ class RiskEngine:
                 for f, c, v in factors
             ],
             missing_features=missing_features,
+            as_of=event.occurred_at,
         )
 
     def _fallback(self, event: ClinicalEvent, reason: str) -> RiskScore:
@@ -239,6 +240,7 @@ class RiskEngine:
                 target_id=self.target_id,
                 score=0.0,
                 band="low",
+                as_of=event.occurred_at,
             ),
             reason,
         )

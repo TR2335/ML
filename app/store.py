@@ -410,7 +410,7 @@ class Store:
         scores = [RiskScore.model_validate(self._loads(row["data_json"])) for row in rows]
         return {score.target_id: score for score in scores}
 
-    def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> None:
+    def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> str:
         with self._lock, self.connection:
             previous = self.get_score(
                 score.encounter_id,
@@ -419,6 +419,10 @@ class Store:
                 target_id=score.target_id,
             )
             if previous:
+                new_as_of = score.as_of or score.scored_at
+                old_as_of = previous.as_of or previous.scored_at
+                if new_as_of < old_as_of:
+                    return "skipped_stale"
                 score.score_id = previous.score_id
                 if preserve_review and previous.status != "new":
                     score.status = previous.status
@@ -433,6 +437,7 @@ class Store:
                     score.target_id,
                 ),
             )
+        return "applied"
 
     def add_audit(self, event: AuditEvent) -> None:
         with self._lock, self.connection:

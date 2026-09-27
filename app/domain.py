@@ -102,6 +102,7 @@ class RiskScore(BaseModel):
     top_factors: list[RiskFactor] = Field(default_factory=list)
     missing_features: list[str] = Field(default_factory=list)
     scored_at: datetime = Field(default_factory=utc_now)
+    as_of: datetime | None = None
     status: Literal["new", "acknowledged", "in_progress", "resolved"] = "new"
     human_review: str | None = None
 

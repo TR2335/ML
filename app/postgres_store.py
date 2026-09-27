@@ -309,10 +309,12 @@ class PostgresStore:
             score.encounter_id, score.tenant_id, score.facility_id, score.target_id
         )
         if previous:
-            new_as_of = score.as_of or score.scored_at
-            old_as_of = previous.as_of or previous.scored_at
-            if new_as_of < old_as_of:
-                return "skipped_stale"
+            # A legacy row without as_of has unknown staleness: never block
+            # rescoring on it (preserve_review still guards human review).
+            if previous.as_of is not None:
+                new_as_of = score.as_of or score.scored_at
+                if new_as_of < previous.as_of:
+                    return "skipped_stale"
             score.score_id = previous.score_id
             if preserve_review and previous.status != "new":
                 score.status = previous.status

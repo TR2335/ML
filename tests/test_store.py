@@ -210,6 +210,24 @@ def test_stale_score_does_not_overwrite(tmp_path):
     assert result.band == "critical"
 
 
+def test_legacy_row_without_as_of_is_rescored(tmp_path):
+    """Review Important #1: a pre-upgrade row (no as_of) must not freeze rescoring."""
+    store = Store(str(tmp_path / "store.db"))
+    store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])
+    base = {"patient_id": "pat-1", "encounter_id": "enc-1", "model_version": "test"}
+    legacy = RiskScore(**base, score=0.3, band="medium")  # as_of 缺失（升级前存量形态）
+    assert store.upsert_score(legacy) == "applied"
+    rescored = RiskScore(
+        **base,
+        score=0.7,
+        band="high",
+        as_of=datetime(2026, 1, 1, 6, 0, tzinfo=UTC),
+    )
+    # 存量行陈旧度未知 → 不应阻止基于历史事件的重打分
+    assert store.upsert_score(rescored) == "applied"
+    assert store.get_score("enc-1", "group-demo", "hospital-01").score == 0.7
+
+
 def test_target_scoped_scores_are_independent(tmp_path):
     store = Store(str(tmp_path / "store.db"))
     store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])

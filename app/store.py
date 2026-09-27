@@ -410,7 +410,7 @@ class Store:
         scores = [RiskScore.model_validate(self._loads(row["data_json"])) for row in rows]
         return {score.target_id: score for score in scores}
 
-    def upsert_score(self, score: RiskScore) -> None:
+    def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> None:
         with self._lock, self.connection:
             previous = self.get_score(
                 score.encounter_id,
@@ -420,7 +420,7 @@ class Store:
             )
             if previous:
                 score.score_id = previous.score_id
-                if previous.status != "new":
+                if preserve_review and previous.status != "new":
                     score.status = previous.status
                     score.human_review = previous.human_review
             self.connection.execute(

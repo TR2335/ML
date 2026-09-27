@@ -304,13 +304,13 @@ class PostgresStore:
         scores = [RiskScore.model_validate(row["data_json"]) for row in rows]
         return {score.target_id: score for score in scores}
 
-    def upsert_score(self, score: RiskScore) -> None:
+    def upsert_score(self, score: RiskScore, *, preserve_review: bool = True) -> None:
         previous = self.get_score(
             score.encounter_id, score.tenant_id, score.facility_id, score.target_id
         )
         if previous:
             score.score_id = previous.score_id
-            if previous.status != "new":
+            if preserve_review and previous.status != "new":
                 score.status = previous.status
                 score.human_review = previous.human_review
         with self.pool.connection() as connection:

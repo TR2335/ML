@@ -266,7 +266,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
             raise HTTPException(status_code=404, detail="score_not_found")
         score.status = request.status
         score.human_review = request.note
-        store.upsert_score(score)
+        store.upsert_score(score, preserve_review=False)
         metrics.inc("medintel_reviews_total")
         audit(
             store,

@@ -238,3 +238,27 @@ def test_metrics_can_be_disabled(tmp_path):
     )
     with TestClient(application) as client:
         assert client.get("/api/metrics").status_code == 404
+
+
+def test_review_status_transitions(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    with TestClient(application) as client:
+        for status, note in [
+            ("acknowledged", "已确认告警"),
+            ("in_progress", "责任团队处置中"),
+            ("resolved", "处置完成"),
+        ]:
+            response = client.post(
+                "/api/patients/enc-001/review",
+                json={"status": status, "note": note},
+                headers=headers,
+            )
+            assert response.status_code == 200
+            stored = client.get("/api/patients/enc-001", headers=headers).json()["risks"][
+                "deterioration_24h"
+            ]
+            assert stored["status"] == status
+            assert stored["human_review"] == note

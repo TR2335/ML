@@ -51,7 +51,7 @@ class PostgresStore:
                     PRIMARY KEY (tenant_id, encounter_id)
                 );
                 CREATE TABLE IF NOT EXISTS events (
-                    event_id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
                     encounter_id TEXT NOT NULL,
                     patient_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
@@ -59,7 +59,8 @@ class PostgresStore:
                     occurred_at TIMESTAMPTZ NOT NULL,
                     data_json JSONB NOT NULL,
                     FOREIGN KEY (tenant_id, encounter_id)
-                        REFERENCES patients(tenant_id, encounter_id)
+                        REFERENCES patients(tenant_id, encounter_id),
+                    PRIMARY KEY (tenant_id, event_id)
                 );
                 CREATE INDEX IF NOT EXISTS events_tenant_encounter_time
                     ON events(tenant_id, encounter_id, occurred_at);
@@ -80,6 +81,28 @@ class PostgresStore:
                     occurred_at TIMESTAMPTZ NOT NULL,
                     data_json JSONB NOT NULL
                 );
+                """
+            )
+            # Re-key a pre-existing global-PK events table to (tenant_id, event_id).
+            connection.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint c
+                        WHERE c.conname = 'events_pkey'
+                          AND c.conrelid = 'events'::regclass
+                          AND (
+                              SELECT array_agg(a.attname ORDER BY k.ord)
+                              FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+                              JOIN pg_attribute a
+                                ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                          ) <> ARRAY['tenant_id', 'event_id']
+                    ) THEN
+                        ALTER TABLE events DROP CONSTRAINT events_pkey;
+                        ALTER TABLE events ADD PRIMARY KEY (tenant_id, event_id);
+                    END IF;
+                END $$;
                 """
             )
 
@@ -159,10 +182,11 @@ class PostgresStore:
                 is not None
             )
 
-    def get_event(self, event_id: str) -> ClinicalEvent | None:
+    def get_event(self, event_id: str, tenant_id: str) -> ClinicalEvent | None:
         with self.pool.connection() as connection:
             row = connection.execute(
-                "SELECT data_json FROM events WHERE event_id=%s", (event_id,)
+                "SELECT data_json FROM events WHERE event_id=%s AND tenant_id=%s",
+                (event_id, tenant_id),
             ).fetchone()
         return ClinicalEvent.model_validate(row["data_json"]) if row else None
 

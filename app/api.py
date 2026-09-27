@@ -137,7 +137,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
         inserted = store.add_event(event)
         if not inserted:
             metrics.inc("medintel_events_duplicate_total")
-            existing_event = store.get_event(event.event_id)
+            existing_event = store.get_event(event.event_id, event.tenant_id)
             if existing_event is None:
                 # The insert may have raced with a transaction that has not
                 # become visible yet. Let the retry path below rebuild from

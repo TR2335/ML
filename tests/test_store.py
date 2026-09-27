@@ -228,6 +228,101 @@ def test_legacy_row_without_as_of_is_rescored(tmp_path):
     assert store.get_score("enc-1", "group-demo", "hospital-01").score == 0.7
 
 
+def test_cross_tenant_event_id_collision_accepted(tmp_path):
+    store = Store(str(tmp_path / "store.db"))
+    store.seed(
+        [
+            {
+                "patient_id": "pat-a",
+                "encounter_id": "enc-a",
+                "tenant_id": "tenant-a",
+                "facility_id": "facility-a",
+                "display_name": "甲患者",
+            },
+            {
+                "patient_id": "pat-b",
+                "encounter_id": "enc-b",
+                "tenant_id": "tenant-b",
+                "facility_id": "facility-b",
+                "display_name": "乙患者",
+            },
+        ],
+        [],
+    )
+    first = ClinicalEvent(
+        event_id="shared-id",
+        event_type="lab_result",
+        patient_id="pat-a",
+        encounter_id="enc-a",
+        tenant_id="tenant-a",
+        facility_id="facility-a",
+        payload={"lactate": 3.0},
+    )
+    second = ClinicalEvent(
+        event_id="shared-id",
+        event_type="lab_result",
+        patient_id="pat-b",
+        encounter_id="enc-b",
+        tenant_id="tenant-b",
+        facility_id="facility-b",
+        payload={"lactate": 4.0},
+    )
+    assert store.add_event(first) is True
+    assert store.add_event(second) is True  # 跨租户不再被全局 PK 吞掉
+    assert store.add_event(first) is False  # 同租户重投递仍幂等
+    assert len(store.events_for("enc-a", "tenant-a", "facility-a")) == 1
+    assert len(store.events_for("enc-b", "tenant-b", "facility-b")) == 1
+
+
+def test_event_schema_migration_preserves_rows(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "store.db"
+    legacy_sql = """
+    CREATE TABLE patients (
+        encounter_id TEXT NOT NULL,
+        patient_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        facility_id TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        PRIMARY KEY (tenant_id, encounter_id)
+    );
+    CREATE TABLE events (
+        event_id TEXT PRIMARY KEY,
+        encounter_id TEXT NOT NULL,
+        patient_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        facility_id TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        data_json TEXT NOT NULL
+    );
+    INSERT INTO events VALUES
+    ('evt-old1', 'enc-1', 'pat-1', 'tenant-a', 'facility-a', '2026-01-01T06:00:00+00:00', '{}'),
+    ('evt-old2', 'enc-2', 'pat-2', 'tenant-b', 'facility-b', '2026-01-01T07:00:00+00:00', '{}');
+    """
+    raw = sqlite3.connect(path)
+    raw.executescript(legacy_sql)
+    raw.commit()
+    raw.close()
+
+    store = Store(str(path))  # 触发 _create_schema → 迁移
+    with store._lock:
+        pk = [
+            row["name"]
+            for row in store.connection.execute("PRAGMA table_info(events)").fetchall()
+            if row["pk"]
+        ]
+        count = store.connection.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
+    # PRAGMA 按表列序返回 pk 列而非键序，故用集合断言（仍可区分旧结构 ['event_id']）
+    assert set(pk) == {"tenant_id", "event_id"}
+    assert count == 2
+    store.close()
+    reopened = Store(str(path))  # 迁移幂等：再次打开无异常
+    with reopened._lock:
+        assert reopened.connection.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"] == 2
+    reopened.close()
+
+
 def test_target_scoped_scores_are_independent(tmp_path):
     store = Store(str(tmp_path / "store.db"))
     store.seed([{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}], [])

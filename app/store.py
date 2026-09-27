@@ -52,6 +52,7 @@ class Store:
         with self._lock:
             self._migrate_legacy_scope_keys()
             self._migrate_score_targets()
+            self._migrate_event_tenant_scope()
             with self.connection:
                 self.connection.executescript(
                     """
@@ -64,7 +65,7 @@ class Store:
                     PRIMARY KEY (tenant_id, encounter_id)
                 );
                 CREATE TABLE IF NOT EXISTS events (
-                    event_id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL,
                     encounter_id TEXT NOT NULL,
                     patient_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
@@ -72,7 +73,8 @@ class Store:
                     occurred_at TEXT NOT NULL,
                     data_json TEXT NOT NULL,
                     FOREIGN KEY (tenant_id, encounter_id)
-                        REFERENCES patients(tenant_id, encounter_id)
+                        REFERENCES patients(tenant_id, encounter_id),
+                    PRIMARY KEY (tenant_id, event_id)
                 );
                 CREATE INDEX IF NOT EXISTS events_tenant_encounter_time
                     ON events(tenant_id, encounter_id, occurred_at);
@@ -190,6 +192,46 @@ class Store:
         finally:
             self.connection.execute("PRAGMA foreign_keys=ON")
 
+    def _migrate_event_tenant_scope(self) -> None:
+        """Re-key events to (tenant_id, event_id) so cross-tenant ids coexist."""
+        table = self.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'"
+        ).fetchone()
+        if not table:
+            return
+        columns = self.connection.execute("PRAGMA table_info(events)").fetchall()
+        primary_key = [row["name"] for row in columns if row["pk"]]
+        if primary_key == ["tenant_id", "event_id"]:
+            return
+        self.connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with self.connection:
+                self.connection.execute("ALTER TABLE events RENAME TO events_legacy")
+                self.connection.executescript(
+                    """
+                    CREATE TABLE events (
+                        event_id TEXT NOT NULL,
+                        encounter_id TEXT NOT NULL,
+                        patient_id TEXT NOT NULL,
+                        tenant_id TEXT NOT NULL,
+                        facility_id TEXT NOT NULL,
+                        occurred_at TEXT NOT NULL,
+                        data_json TEXT NOT NULL,
+                        FOREIGN KEY (tenant_id, encounter_id)
+                            REFERENCES patients(tenant_id, encounter_id),
+                        PRIMARY KEY (tenant_id, event_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS events_tenant_encounter_time
+                        ON events(tenant_id, encounter_id, occurred_at);
+                    INSERT INTO events(event_id, encounter_id, patient_id, tenant_id, facility_id, occurred_at, data_json)
+                        SELECT event_id, encounter_id, patient_id, tenant_id, facility_id, occurred_at, data_json
+                        FROM events_legacy;
+                    DROP TABLE events_legacy;
+                    """
+                )
+        finally:
+            self.connection.execute("PRAGMA foreign_keys=ON")
+
     @staticmethod
     def _json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
@@ -274,11 +316,12 @@ class Store:
                 is not None
             )
 
-    def get_event(self, event_id: str) -> ClinicalEvent | None:
-        """Return an event by id for safe idempotency conflict checks."""
+    def get_event(self, event_id: str, tenant_id: str) -> ClinicalEvent | None:
+        """Return a tenant-scoped event by id for safe idempotency conflict checks."""
         with self._lock:
             row = self.connection.execute(
-                "SELECT data_json FROM events WHERE event_id = ?", (event_id,)
+                "SELECT data_json FROM events WHERE event_id = ? AND tenant_id = ?",
+                (event_id, tenant_id),
             ).fetchone()
         return ClinicalEvent.model_validate(self._loads(row["data_json"])) if row else None
 

@@ -41,7 +41,7 @@ class PatientRecord(BaseModel):
 
 class ClinicalEvent(BaseModel):
     event_id: str = Field(
-        default_factory=lambda: f"evt-{uuid4().hex[:10]}", min_length=1, max_length=128
+        default_factory=lambda: f"evt-{uuid4().hex}", min_length=1, max_length=128
     )
     event_type: Literal["vital_signs", "lab_result", "admission", "discharge", "medication", "note"]
     occurred_at: datetime = Field(default_factory=utc_now)
@@ -114,7 +114,7 @@ class ReviewRequest(BaseModel):
 
 
 class AuditEvent(BaseModel):
-    audit_id: str = Field(default_factory=lambda: f"audit-{uuid4().hex[:10]}")
+    audit_id: str = Field(default_factory=lambda: f"audit-{uuid4().hex}")
     action: str
     actor: str
     resource_type: str

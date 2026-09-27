@@ -5,6 +5,7 @@ from time import monotonic
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.staticfiles import StaticFiles
 
 from .api import build_router
 from .config import get_settings
@@ -60,6 +61,18 @@ def create_app(settings_override=None, store_override=None, engine_override=None
             if local_settings.metrics_enabled:
                 metrics.observe("medintel_http_request_seconds", monotonic() - started)
 
+    @application.middleware("http")
+    async def security_headers(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/":
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';"
+                " object-src 'none'; base-uri 'self'",
+            )
+            response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        return response
+
     application.add_middleware(
         CORSMiddleware,
         allow_origins=local_settings.cors_origin_list,
@@ -67,14 +80,17 @@ def create_app(settings_override=None, store_override=None, engine_override=None
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.mount(
+        "/static", StaticFiles(directory=Path(__file__).parent / "static"), name="static"
+    )
     application.include_router(build_router(local_store, local_engine, local_settings))
+
+    @application.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(Path(__file__).parent / "static" / "index.html")
+
     return application
 
 
 settings = get_settings()
 app = create_app(settings)
-
-
-@app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    return FileResponse(Path(__file__).parent / "static" / "index.html")

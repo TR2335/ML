@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -263,3 +265,30 @@ def test_review_status_transitions(tmp_path):
             ]
             assert stored["status"] == status
             assert stored["human_review"] == note
+
+
+def test_index_security_headers(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(application) as client:
+        response = client.get("/")
+        assert response.status_code == 200
+        csp = response.headers.get("content-security-policy", "")
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert response.headers.get("x-content-type-options") == "nosniff"
+        html = response.text
+        assert "<script src=" in html
+        assert re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", html) == []
+        assert "onclick=" not in html
+
+
+def test_static_app_js_is_served(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(application) as client:
+        response = client.get("/static/app.js")
+        assert response.status_code == 200
+        assert "const safe =" in response.text

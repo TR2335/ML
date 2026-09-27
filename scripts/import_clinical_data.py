@@ -14,6 +14,7 @@ from typing import Any
 from app.config import get_settings
 from app.domain import ClinicalEvent, PatientRecord
 from app.storage import create_store
+from app.validation import ImportPartialFailure, is_future_offset
 
 
 def load_records(path: Path) -> list[dict[str, Any]]:
@@ -53,7 +54,12 @@ def main() -> None:
         (item["tenant_id"], item["facility_id"], item["encounter_id"]): item["patient_id"]
         for item in patients
     }
+    settings = get_settings()
     for event in events:
+        if is_future_offset(
+            event.occurred_at, max_skew_minutes=settings.max_event_future_skew_minutes
+        ):
+            raise ValueError(f"event {event.event_id} occurred_at is in the future")
         key = (event.tenant_id, event.facility_id, event.encounter_id)
         if patient_keys.get(key) != event.patient_id:
             raise ValueError(f"event {event.event_id} does not match a patient record for {key}")
@@ -67,18 +73,19 @@ def main() -> None:
     if args.commit:
         store = create_store(get_settings())
         try:
-            for patient in patients:
-                store.upsert_patient(patient)
-            accepted = 0
-            duplicates = 0
-            for event in events:
-                if store.add_event(event):
-                    accepted += 1
-                else:
-                    duplicates += 1
-            summary.update({"accepted_events": accepted, "duplicate_events": duplicates})
+            imported = store.import_records(patients, events)
+        except ImportPartialFailure as exc:
+            print(
+                json.dumps(
+                    {**exc.summary, "commit": False, "error": str(exc)},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            raise
         finally:
             store.close()
+        summary.update(imported)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

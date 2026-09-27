@@ -1,15 +1,14 @@
-from datetime import timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from .config import Settings
-from .domain import ClinicalEvent, ReviewRequest, RiskScore, TargetId, utc_now
+from .domain import ClinicalEvent, ReviewRequest, RiskScore, TargetId
 from .messaging import RedisStreamPublisher, SyncPublisher
 from .observability import metrics
 from .risk import RiskEngine
 from .security import Principal, audit, require_permission
 from .store import Store
+from .validation import is_future_offset
 
 
 def score_all_targets(engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> list[RiskScore]:
@@ -119,8 +118,8 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
         principal: Principal = risk_reviewer,
     ) -> dict:
         metrics.inc("medintel_events_received_total")
-        if event.occurred_at > utc_now() + timedelta(
-            minutes=settings.max_event_future_skew_minutes
+        if is_future_offset(
+            event.occurred_at, max_skew_minutes=settings.max_event_future_skew_minutes
         ):
             metrics.inc("medintel_events_rejected_total")
             raise HTTPException(status_code=422, detail="event_time_in_future")

@@ -6,6 +6,7 @@ from threading import RLock
 from typing import Any
 
 from .domain import AuditEvent, ClinicalEvent, RiskScore, TargetId
+from .validation import ImportPartialFailure
 
 
 class Store:
@@ -281,6 +282,48 @@ class Store:
                     self._json({**patient, "tenant_id": tenant_id, "facility_id": facility_id}),
                 ),
             )
+
+    def import_records(self, patients: list[dict], events: list[ClinicalEvent]) -> dict:
+        """Write a validated batch in one transaction; roll back completely on failure."""
+        summary: dict = {
+            "patients": 0,
+            "accepted_events": 0,
+            "duplicate_events": 0,
+            "failed": 0,
+            "last_ok": None,
+        }
+        with self._lock:
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
+                for patient in patients:
+                    tenant_id = patient.get("tenant_id", "group-demo")
+                    facility_id = patient.get("facility_id", "hospital-01")
+                    self.connection.execute(
+                        "INSERT OR IGNORE INTO patients(encounter_id, patient_id, tenant_id, facility_id, data_json) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            patient["encounter_id"],
+                            patient["patient_id"],
+                            tenant_id,
+                            facility_id,
+                            self._json(
+                                {**patient, "tenant_id": tenant_id, "facility_id": facility_id}
+                            ),
+                        ),
+                    )
+                    summary["patients"] += 1
+                    summary["last_ok"] = f"{tenant_id}/{patient['encounter_id']}"
+                for event in events:
+                    if self._insert_event(event):
+                        summary["accepted_events"] += 1
+                    else:
+                        summary["duplicate_events"] += 1
+                    summary["last_ok"] = f"{event.tenant_id}/{event.event_id}"
+                self.connection.commit()
+            except BaseException as exc:
+                self.connection.rollback()
+                summary["failed"] = 1
+                raise ImportPartialFailure(summary, str(exc)) from exc
+        return summary
 
     def _insert_event(self, event: ClinicalEvent) -> bool:
         cursor = self.connection.execute(

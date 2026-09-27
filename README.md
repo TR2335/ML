@@ -31,6 +31,8 @@ docker compose up --build
 
 首次启动会在 `data/store.db` 中生成合成住院数据和演示风险分数。运行 `python scripts/generate_demo_data.py --reset` 可以重置演示数据。
 
+> ⚠️ **安全警告**：以下演示令牌**仅在 `APP_ENV=dev` 下有效**。非 dev 环境若 `DEMO_AUTH_ENABLED=true`，应用启动时直接抛出 `RuntimeError` 拒绝启动（fail-closed）；生产必须接入 OIDC 并设置 `DEMO_AUTH_ENABLED=false`。默认 compose 已把端口绑定到 `127.0.0.1`，仅限本机访问。
+
 演示登录令牌：`demo-clinician-token`（临床查看和复核）、`demo-quality-token`（质量与模型卡）、`demo-admin-token`（跨院区管理）。请求使用 `Authorization: Bearer <token>`；这些令牌只在 `APP_ENV=dev` 下有效。
 
 验证代码：

@@ -104,6 +104,10 @@ def _oidc_authenticator(settings: Settings) -> OIDCAuthenticator:
 
 
 def validate_auth_configuration(settings: Settings) -> None:
+    if settings.app_env != "dev" and settings.demo_auth_enabled:
+        raise RuntimeError(
+            "demo authentication must be disabled outside dev (set DEMO_AUTH_ENABLED=false)"
+        )
     if settings.app_env != "dev" and not settings.oidc_enabled:
         raise RuntimeError("production environments require OIDC authentication")
     if settings.oidc_enabled:

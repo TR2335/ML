@@ -1,3 +1,6 @@
+# 本地演示默认 APP_ENV=dev（含演示令牌）。生产部署必须显式设置：
+#   APP_ENV=prod、DEMO_AUTH_ENABLED=false、OIDC_* 三件套，
+#   否则应用启动即拒绝（fail-closed）；prod 默认不允许演示令牌。
 services:
   api:
     build: .
@@ -25,7 +28,7 @@ services:
       OIDC_TENANT_CLAIM: ${OIDC_TENANT_CLAIM:-tenant_id}
       OIDC_FACILITY_CLAIM: ${OIDC_FACILITY_CLAIM:-facility_id}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - medintel_data:/app/data
     healthcheck:

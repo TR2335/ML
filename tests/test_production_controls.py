@@ -7,6 +7,7 @@ import pytest
 from app.config import Settings
 from app.domain import ClinicalEvent
 from app.risk import RiskEngine
+from app.security import validate_auth_configuration
 from app.synthetic import FEATURES
 from scripts.manage_model import main as manage_model_main
 
@@ -141,3 +142,12 @@ def test_model_registry_promote_and_rollback(tmp_path, monkeypatch):
     )
     manage_model_main()
     assert json.loads(serving.read_text())["model_version"] == "v1"
+
+
+def test_non_dev_rejects_demo_auth():
+    with pytest.raises(RuntimeError, match="demo authentication"):
+        validate_auth_configuration(Settings(app_env="prod", demo_auth_enabled=True))
+
+
+def test_dev_demo_auth_still_works():
+    validate_auth_configuration(Settings(app_env="dev", demo_auth_enabled=True))

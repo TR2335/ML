@@ -198,6 +198,7 @@ def test_production_refuses_to_start_without_oidc(tmp_path):
             Settings(
                 app_env="prod",
                 oidc_enabled=False,
+                demo_auth_enabled=False,
                 store_path=str(tmp_path / "store.db"),
                 model_path=str(tmp_path / "model.json"),
             )

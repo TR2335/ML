@@ -7,8 +7,13 @@ but the same artifact shape is intentionally kept stable for the serving layer.
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from random import Random
+
+# 直接以 `python scripts/x.py` 运行时根目录不在 sys.path，补一次以便跨 scripts 导入。
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 FEATURES = [
     "age",
@@ -28,14 +33,18 @@ TARGET_CONFIG = {
     "deterioration_24h": {
         "weights": BASE_WEIGHTS,
         "bias": -7.1,
+        "news2_weight": 0.06,
         "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
     },
     "readmission_30d": {
         "weights": READMISSION_WEIGHTS,
         "bias": -3.0,
+        "news2_weight": 0.02,
         "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
     },
 }
+
+FEATURE_ORDER_V2 = [*FEATURES, "news2_score"]
 
 
 def transform(row: list[float]) -> list[float]:
@@ -83,18 +92,11 @@ def column_stats(rows: list[list[float]]) -> list[dict]:
     return stats
 
 
-def standardize(rows: list[list[float]], stats: list[dict]) -> list[list[float]]:
-    return [
-        [(value - column["mean"]) / column["std"] for value, column in zip(row, stats)]
-        for row in rows
-    ]
-
-
 def sigmoid(value: float) -> float:
     return 1 / (1 + math.exp(-max(min(value, 30), -30)))
 
 
-def make_row(rng: Random, target_id: str) -> tuple[list[float], int]:
+def make_row(rng: Random, target_id: str) -> tuple[list[float], float, int]:
     row = [
         rng.uniform(18, 95),
         rng.uniform(55, 150),
@@ -107,19 +109,24 @@ def make_row(rng: Random, target_id: str) -> tuple[list[float], int]:
         rng.uniform(0.4, 6),
         rng.uniform(0, 4),
     ]
+    from scripts.baselines import news2_score
+
     transformed = transform(row)
     config = TARGET_CONFIG[target_id]
-    latent = config["bias"] + sum(
-        weight * value for weight, value in zip(config["weights"], transformed)
+    total, _ = news2_score(dict(zip(FEATURES, row)))
+    latent = (
+        config["bias"]
+        + sum(weight * value for weight, value in zip(config["weights"], transformed))
+        + config["news2_weight"] * total
     )
     probability = sigmoid(latent)
-    return row, int(rng.random() < probability)
+    return row, float(total), int(rng.random() < probability)
 
 
 def train(
     rows: list[list[float]], labels: list[int], epochs: int = 900, learning_rate: float = 0.004
 ) -> tuple[float, list[float]]:
-    weights = [0.0] * len(FEATURES)
+    weights = [0.0] * len(rows[0])  # 宽度由向量决定（v2 为 11 维：10 体征 + news2）
     bias = 0.0
     for _ in range(epochs):
         grad_w = [0.0] * len(weights)
@@ -151,25 +158,32 @@ def main() -> None:
     rng = Random(42)
     generated = [make_row(rng, args.target_id) for _ in range(args.rows)]
     raw_rows = [item[0] for item in generated]
-    labels = [item[1] for item in generated]
-    stats = column_stats(raw_rows)
-    bias, weights = train(standardize(raw_rows, stats), labels)
+    news2_values = [item[1] for item in generated]
+    labels = [item[2] for item in generated]
+    stats = column_stats([row + [news2] for row, news2 in zip(raw_rows, news2_values)])
+    vectors = [
+        [(value - column["mean"]) / column["std"] for value, column in zip([*row, news2], stats)]
+        for row, news2 in zip(raw_rows, news2_values)
+    ]
+    bias, weights = train(vectors, labels)
     artifact = {
         "model_version": args.version,
         "target_id": args.target_id,
         "algorithm": "logistic_regression_gradient_descent",
-        "feature_names": FEATURES,
-        "feature_order": FEATURES,
+        "feature_names": FEATURE_ORDER_V2,
+        "feature_order": FEATURE_ORDER_V2,
         "preprocess": {
             feature: {
                 "median": round(entry["median"], 8),
                 "mean": round(entry["mean"], 8),
                 "std": round(entry["std"], 8),
             }
-            for feature, entry in zip(FEATURES, stats)
+            for feature, entry in zip(FEATURE_ORDER_V2, stats)
         },
         "bias": round(bias, 8),
-        "weights": {feature: round(weight, 8) for feature, weight in zip(FEATURES, weights)},
+        "weights": {
+            feature: round(weight, 8) for feature, weight in zip(FEATURE_ORDER_V2, weights)
+        },
         "training_rows": args.rows,
         "label_definition": f"synthetic_{args.target_id}",
         "thresholds": TARGET_CONFIG[args.target_id]["thresholds"],

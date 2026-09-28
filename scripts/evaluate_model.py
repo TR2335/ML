@@ -9,9 +9,14 @@ group columns support temporal holdout and subgroup reporting.
 import argparse
 import csv
 import json
+import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
+
+# 直接以 `python scripts/x.py` 运行时根目录不在 sys.path，补一次以便跨 scripts 导入。
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import Settings
 from app.domain import ClinicalEvent
@@ -95,6 +100,81 @@ def evaluate_rows(
     return labels, scores
 
 
+def _row_time(row: dict[str, str]) -> datetime:
+    raw = row.get("index_time") or row.get("occurred_at")
+    if not raw:
+        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(raw)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _payload(row: dict[str, str], include_news2: bool) -> dict[str, float]:
+    payload = {
+        feature: float(row[feature])
+        for feature in FEATURES
+        if row.get(feature, "") not in ("", None)
+    }
+    if include_news2 and row.get("news2_score", "") not in ("", None):
+        payload["news2_score"] = float(row["news2_score"])
+    return payload
+
+
+def _make_event(
+    row: dict[str, str], payload: dict[str, float], occurred_at: datetime, index: int
+) -> ClinicalEvent:
+    return ClinicalEvent(
+        event_type="vital_signs",
+        patient_id=row.get("patient_id", f"validation-patient-{index}"),
+        encounter_id=row.get("encounter_id", f"validation-encounter-{index}"),
+        occurred_at=occurred_at,
+        payload=payload,
+    )
+
+
+def comparison_metrics(
+    rows: Iterable[dict[str, str]], engine: RiskEngine, label_column: str
+) -> dict[str, dict[str, float | None]]:
+    """Three-way metrics on the same rows/labels: model (news2 median-imputed
+    for v2 artifacts), news2 baseline (normalized /15, threshold 7/15),
+    model_with_news2 (news2_score provided in the payload)."""
+    from scripts.baselines import news2_score
+
+    model_labels: list[int] = []
+    model_scores: list[float] = []
+    enriched_labels: list[int] = []
+    enriched_scores: list[float] = []
+    baseline_labels: list[int] = []
+    baseline_scores: list[float] = []
+    for index, row in enumerate(rows, start=1):
+        try:
+            label = int(row[label_column])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"row {index}: {label_column} must be 0 or 1") from exc
+        if label not in (0, 1):
+            raise ValueError(f"row {index}: {label_column} must be 0 or 1")
+        occurred_at = _row_time(row)
+        model_labels.append(label)
+        model_scores.append(
+            engine.score(_make_event(row, _payload(row, False), occurred_at, index)).score
+        )
+        enriched_labels.append(label)
+        enriched_scores.append(
+            engine.score(
+                _make_event(row, _payload(row, include_news2=True), occurred_at, index)
+            ).score
+        )
+        total, _ = news2_score(_payload(row, False))
+        baseline_labels.append(label)
+        baseline_scores.append(total / 15)
+    return {
+        "model": binary_metrics(model_labels, model_scores, engine.thresholds["high"]),
+        "news2": binary_metrics(baseline_labels, baseline_scores, 7 / 15),
+        "model_with_news2": binary_metrics(
+            enriched_labels, enriched_scores, engine.thresholds["high"]
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
@@ -102,6 +182,12 @@ def main() -> None:
     parser.add_argument("--group-column", default=None)
     parser.add_argument(
         "--split-time", default=None, help="ISO timestamp; evaluate only rows at/after this time"
+    )
+    parser.add_argument(
+        "--input-format",
+        choices=["default", "labeled_csv"],
+        default="default",
+        help="labeled_csv: use index_time column and three-way news2 comparison",
     )
     parser.add_argument(
         "--target-id", choices=["deterioration_24h", "readmission_30d"], default="deterioration_24h"
@@ -127,13 +213,34 @@ def main() -> None:
             if row.get("occurred_at")
             and datetime.fromisoformat(row["occurred_at"]).astimezone(UTC) >= split
         ]
-    labels, scores = evaluate_rows(rows, engine, args.label_column)
     report: dict[str, object] = {
         "target_id": args.target_id,
         "model_version": engine.version,
         "thresholds": engine.thresholds,
-        "evaluation": binary_metrics(labels, scores, engine.thresholds["high"]),
     }
+    if args.input_format == "labeled_csv":
+        if args.group_column:
+            raise SystemExit("subgroup analysis requires --input-format default (Plan Ruling R12)")
+        comparison = comparison_metrics(rows, engine, args.label_column)
+        report["evaluation"] = comparison["model"]
+        report["comparison"] = comparison
+        has_news2 = "news2_score" in engine.feature_order
+        delta = (
+            (comparison["model_with_news2"]["auprc"] or 0.0) - (comparison["model"]["auprc"] or 0.0)
+            if has_news2
+            else None
+        )
+        report["news2_feature_gain"] = {
+            "auprc_model": comparison["model"]["auprc"],
+            "auprc_model_with_news2": comparison["model_with_news2"]["auprc"],
+            "delta": None if delta is None else round(delta, 6),
+            "recommendation": (
+                "unsupported" if not has_news2 else "keep" if delta and delta > 0.001 else "drop"
+            ),
+        }
+    else:
+        labels, scores = evaluate_rows(rows, engine, args.label_column)
+        report["evaluation"] = binary_metrics(labels, scores, engine.thresholds["high"])
     if args.group_column:
         groups = sorted({row.get(args.group_column, "unknown") for row in rows})
         report["subgroups"] = {}

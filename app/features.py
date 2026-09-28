@@ -16,8 +16,8 @@ TUPLE_FEATURE_ORDER: list[str] = [
     f"{feature}__{suffix}" for feature in FEATURES for suffix in STAT_SUFFIXES
 ]
 
-# T5.4 在七元组之后追加 news2_score（stacking 基线输入）。
-FEATURE_ORDER: list[str] = list(TUPLE_FEATURE_ORDER)
+# T5.4：七元组之后追加 news2_score（stacking 基线输入；评估用增益决定去留）。
+FEATURE_ORDER: list[str] = list(TUPLE_FEATURE_ORDER) + ["news2_score"]
 
 
 def build_landmarks(

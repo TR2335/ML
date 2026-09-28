@@ -60,3 +60,10 @@ def test_landmark_window_includes_lower_bound():
     )
     assert rows[0]["heart_rate__missing"] == 0.0
     assert rows[0]["heart_rate__latest"] == 77
+
+
+def test_feature_order_includes_news2_score():
+    from app.features import FEATURE_ORDER
+
+    assert FEATURE_ORDER[-1] == "news2_score"
+    assert len(FEATURE_ORDER) == 71

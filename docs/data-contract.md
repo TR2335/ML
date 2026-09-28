@@ -55,3 +55,12 @@
 - `preprocess: {feature: {median, mean, std}}`（可选，必须伴随 `feature_order`）：
   打分时标准化 `z = (value - mean) / std`（std≤0 视为 1），缺失特征用 `median` 填补并同时列入 `missing_features`。
 - 无 `feature_order`/`preprocess` 的旧工件行为不变（硬编码中心化变换路径）。
+
+## NEWS2 基线（P5）
+
+- `scripts/baselines.py::news2_score`：RCP NEWS2 Scale 1 五组件（RR/SpO2/SBP/HR/体温），
+  总分 0–15；任一单参数 3 分或总分 ≥7 → high，5–6 → medium，0–4 → low。
+- 意识项（ACVPU）演示数据缺测，不计入总分——解读基线时须注明该局限。
+- `news2_score` 同时作为模型输入（工件 `feature_order` 第 11 项）；评估报告输出
+  `model`/`news2`/`model_with_news2` 三列与 AUPRC 增益，增益 ≤0.001 建议撤下
+  （结论记录在 `news2_feature_gain.recommendation`）。

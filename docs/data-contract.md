@@ -38,3 +38,13 @@
 ## 风险分数
 
 风险响应包含 `target_id`、`model_version`、`score`、`band`、`top_factors`、`missing_features`、`scored_at`、`status` 和 `human_review`。`target_id` 为 `deterioration_24h` 或 `readmission_30d`；`band` 为 `low`、`medium`、`high`、`critical`；处置状态为 `new`、`acknowledged`、`in_progress`、`resolved`。一次事件接入会返回两个独立目标的 `scores` 映射，并保留 `score` 作为 24 小时恶化目标的兼容字段。
+
+## 结局表型（P5 标签派生）
+
+- `deterioration_24h`：index 时刻起 24 小时窗口 `[index, index+24h)` 内发生 RRT（肾脏替代治疗）、
+  非计划 ICU 转入、心跳骤停、死亡任一事件记为阳性；恰在 `index+24h` 整点的结局记为阴性（窗口上界严格小于）。
+- `readmission_30d`：出院后 30 天内非计划再入院记为阳性（horizon_hours=720，index=出院时刻）。
+- 结局事件行格式：`{encounter_id, occurred_at(ISO8601, naive 视为 UTC), outcome_type}`；
+  `outcome_type` 白名单见 `scripts/derive_labels.py::OUTCOME_TYPES`。
+- 演示数据：高风险患者集合 {2,5,9,14} 在首事件后 48h 发生 RRT；index 网格 1..96h，
+  阳性率 96/1728 ≈ 5.6%（落在 5–15% 验收区间）。

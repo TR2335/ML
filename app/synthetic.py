@@ -68,3 +68,40 @@ def demo_patients(count: int = 18, seed: int = 7) -> tuple[list[dict], list[Clin
             )
         )
     return patients, events
+
+
+DEMO_HIGH_RISK = frozenset({2, 5, 9, 14})
+DEMO_SERIAL_HOURS = range(0, 97, 6)  # 每 6h 一条生命体征，0..96h
+DEMO_RRT_DELAY_HOURS = 48
+
+
+def demo_patients_with_outcomes(
+    count: int = 18, seed: int = 7
+) -> tuple[list[dict], list[ClinicalEvent], list[dict]]:
+    """演示管线专用：患者 + 串行生命体征 + 高风险患者的 RRT 结局（与真实管道同构）。"""
+    patients, first_events = demo_patients(count=count, seed=seed)
+    events: list[ClinicalEvent] = []
+    outcomes: list[dict] = []
+    for patient, first in zip(patients, first_events):
+        encounter_id = patient["encounter_id"]
+        index = int(encounter_id.split("-")[1])
+        for hour in DEMO_SERIAL_HOURS:
+            events.append(
+                first.model_copy(
+                    update={
+                        "event_id": f"{first.event_id}-h{hour}",
+                        "occurred_at": first.occurred_at + timedelta(hours=hour),
+                    }
+                )
+            )
+        if index in DEMO_HIGH_RISK:
+            outcomes.append(
+                {
+                    "encounter_id": encounter_id,
+                    "occurred_at": (
+                        first.occurred_at + timedelta(hours=DEMO_RRT_DELAY_HOURS)
+                    ).isoformat(),
+                    "outcome_type": "rrt",
+                }
+            )
+    return patients, events, outcomes

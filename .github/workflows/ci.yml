@@ -30,3 +30,26 @@ jobs:
       - run: pip-audit
       # POSTGRES_PASSWORD 为 :?required 强制项；校验用哑值，真实部署必须显式提供
       - run: POSTGRES_PASSWORD=ci docker compose config --quiet
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: POSTGRES_PASSWORD=ci docker compose --profile future-infra up -d --build
+      - name: Wait for services
+        run: |
+          for i in $(seq 1 60); do
+            pg=$(docker compose --profile future-infra exec -T postgres pg_isready -U medintel -d medintel || true)
+            redis=$(docker compose --profile future-infra exec -T redis redis-cli ping || true)
+            echo "$pg $redis" | grep -q "accepting connections" && echo "$redis" | grep -q "PONG" && break
+            sleep 2
+          done
+      - run: POSTGRES_PASSWORD=ci REDIS_URL=redis://127.0.0.1:6379/0 RUN_REDIS_FAILURE_TEST=1 pytest -m integration -v
+      - if: always()
+        run: POSTGRES_PASSWORD=ci docker compose --profile future-infra down -v

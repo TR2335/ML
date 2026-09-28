@@ -34,7 +34,10 @@ include = ["app*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider -m 'not integration'"
+markers = [
+    "integration: requires docker compose --profile future-infra (PostgreSQL/Redis); run with -m integration",
+]
 
 [tool.ruff]
 line-length = 100

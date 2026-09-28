@@ -89,6 +89,8 @@ services:
     profiles: ["future-infra"]
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: medintel
       POSTGRES_USER: medintel
@@ -105,6 +107,8 @@ services:
     profiles: ["future-infra"]
     image: redis:7-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2

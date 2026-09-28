@@ -79,6 +79,7 @@ app/
   storage.py         存储后端选择
   store.py           SQLite 开发实现
   synthetic.py       合成数据与事件生成器
+  validation.py      事件时间与导入校验
   worker.py          批量重评分 worker
   static/
     index.html       轻量风险工作台（壳页）
@@ -100,7 +101,6 @@ docs/
   readiness-review.md 项目检查、覆盖矩阵和上线前缺口
   clinical-pilot-protocol.md 临床标签、静默运行和上线验收模板
   interview-guide.md 面试准备指南
-  data-integration-design.md 数据自助接入设计
 tests/
 ```
 

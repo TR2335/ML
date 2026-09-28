@@ -3,6 +3,7 @@
 import os
 import socket
 import subprocess
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -36,8 +37,11 @@ def test_publish_failure_returns_503_and_retry_recovers(tmp_path):
     from app.config import Settings
     from app.main import create_app
 
+    # 时间戳 id + 独立 store：可重复运行（显式 occurred_at 参与幂等比对），
+    # 且绝不写入仓库开发库 data/store.db（审查 I1）。
+    run_id = int(time.time())
     event = {
-        "event_id": "evt-redis-1",
+        "event_id": f"evt-redis-{run_id}",
         "event_type": "lab_result",
         "patient_id": "pat-001",
         "encounter_id": "enc-001",
@@ -50,6 +54,7 @@ def test_publish_failure_returns_503_and_retry_recovers(tmp_path):
         Settings(
             event_backend="redis",
             redis_url="redis://127.0.0.1:6379/0",
+            store_path=str(tmp_path / "redis.db"),
             model_path=str(tmp_path / "missing.json"),
         )
     )
@@ -59,7 +64,7 @@ def test_publish_failure_returns_503_and_retry_recovers(tmp_path):
         assert _compose("stop", "redis").returncode == 0
         try:
             down = client.post(
-                "/api/events", json={**event, "event_id": "evt-redis-2"}, headers=headers
+                "/api/events", json={**event, "event_id": f"evt-redis-{run_id}-2"}, headers=headers
             )
             assert down.status_code == 503
             audit = client.get("/api/audit", headers={"Authorization": "Bearer demo-quality-token"})
@@ -78,6 +83,7 @@ def test_publish_failure_returns_503_and_retry_recovers(tmp_path):
         settings = Settings(
             event_backend="redis",
             redis_url="redis://127.0.0.1:6379/0",
+            store_path=str(tmp_path / "redis.db"),
             model_path=str(tmp_path / "missing.json"),
         )
         store = create_store(settings)

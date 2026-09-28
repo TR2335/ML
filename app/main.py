@@ -48,13 +48,13 @@ def create_app(settings_override=None, store_override=None, engine_override=None
             if owns_store:
                 local_store.close()
 
-    _schema_docs = None if local_settings.app_env != "dev" else "/docs"
+    _is_prod = local_settings.app_env != "dev"
     application = FastAPI(
         title="MedIntel Clinical Safety API",
         version="0.1.0",
         lifespan=lifespan,
-        docs_url=_schema_docs,
-        redoc_url=_schema_docs,
+        docs_url=None if _is_prod else "/docs",
+        redoc_url=None if _is_prod else "/redoc",
     )
 
     @application.middleware("http")

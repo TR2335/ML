@@ -308,6 +308,37 @@ def test_jwt_leeway_allows_25s_clock_skew(monkeypatch):
     assert principal.subject == "clinician-1"
 
 
+def test_non_dev_hides_schema_docs(tmp_path, monkeypatch):
+    """Plan Ruling R5 回归：非 dev 关闭 /docs 与 /redoc，dev 保持可用。"""
+    from fastapi.testclient import TestClient
+
+    import app.main as main_mod
+    from app.config import Settings
+
+    # prod 全链路校验需要 OIDC/jwt（[prod] extra）；本测试只关心 docs 路由，
+    # 故短路认证校验（docs 路由本身无鉴权依赖）。
+    monkeypatch.setattr(main_mod, "validate_auth_configuration", lambda settings: None)
+    prod = main_mod.create_app(
+        Settings(
+            app_env="prod",
+            demo_auth_enabled=False,
+            model_fallback_enabled=True,
+            store_path=str(tmp_path / "prod.db"),
+            model_path=str(tmp_path / "missing.json"),
+        )
+    )
+    with TestClient(prod) as client:
+        assert client.get("/docs").status_code == 404
+        assert client.get("/redoc").status_code == 404
+
+    dev = main_mod.create_app(
+        Settings(store_path=str(tmp_path / "dev.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(dev) as client:
+        assert client.get("/docs").status_code == 200
+        assert client.get("/redoc").status_code == 200
+
+
 def test_env_postgres_password_allowed_in_prod(tmp_path, monkeypatch):
     """compose 插值取值放在 .env 是最自然的路径；strict 模式不得拒绝该专用变量。"""
     from app.config import get_settings

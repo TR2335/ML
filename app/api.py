@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
@@ -9,6 +11,17 @@ from .risk import RiskEngine
 from .security import Principal, audit, require_permission
 from .store import Store
 from .validation import is_future_offset
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _degraded_code(reason: str) -> str:
+    """Map a raw degraded reason (may contain paths) to a safe category code."""
+    if "not found" in reason:
+        return "model_artifact_missing"
+    if "signature" in reason:
+        return "model_signature_invalid"
+    return "model_artifact_invalid"
 
 
 def score_all_targets(engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> list[RiskScore]:
@@ -38,13 +51,17 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
         event_bus_ok = True
         if settings.event_backend == "redis":
             event_bus_ok = publisher.health()
+        for target, target_engine in engines.items():
+            if target_engine.degraded_reason:
+                # Raw reason (may contain absolute paths) stays in logs only.
+                LOGGER.warning("model degraded (%s): %s", target, target_engine.degraded_reason)
         return {
             "status": "degraded" if degraded or not event_bus_ok else "ok",
             "environment": settings.app_env,
             "event_backend": settings.event_backend,
             "degraded_models": degraded,
             "degraded_reasons": {
-                target: target_engine.degraded_reason
+                target: _degraded_code(target_engine.degraded_reason)
                 for target, target_engine in engines.items()
                 if target_engine.degraded_reason
             },
@@ -137,14 +154,19 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
         if not inserted:
             metrics.inc("medintel_events_duplicate_total")
             existing_event = store.get_event(event.event_id, event.tenant_id)
+            # Plan Ruling R2: occurred_at participates only when the caller
+            # supplied it explicitly — a defaulted utc_now differs per retry
+            # and must not turn ordinary idempotent redeliveries into 409s.
+            supplied_time = "occurred_at" in event.model_fields_set
+            exclude = {} if supplied_time else {"exclude": {"occurred_at"}}
             if existing_event is None:
                 # The insert may have raced with a transaction that has not
                 # become visible yet. Let the retry path below rebuild from
                 # the current snapshot once the row is visible.
                 existing_event = event
-            elif existing_event.model_dump(
-                mode="json", exclude={"occurred_at"}
-            ) != event.model_dump(mode="json", exclude={"occurred_at"}):
+            elif existing_event.model_dump(mode="json", **exclude) != event.model_dump(
+                mode="json", **exclude
+            ):
                 raise HTTPException(status_code=409, detail="event_id_conflict")
             existing_scores = store.get_scores(
                 event.encounter_id, principal.tenant_id, principal.facility_id
@@ -181,6 +203,16 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
                 }
                 for score in existing_scores.values():
                     store.upsert_score(score)
+                metrics.inc("medintel_events_scored_total")
+                audit(
+                    store,
+                    principal,
+                    "event_scored",
+                    "encounter",
+                    event.encounter_id,
+                    {"event_type": event.event_type, "duplicate_rescore": True},
+                    event.facility_id,
+                )
             primary = existing_scores.get("deterioration_24h") or next(
                 iter(existing_scores.values())
             )

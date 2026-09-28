@@ -51,31 +51,54 @@ POSTGRES_PASSWORD=local docker compose up --build
 
 模型完整性：`scripts/manage_model.py promote` 会把模型按 target/version 保存并生成 `manifest.json`。签名要求默认按环境判定：`MODEL_SIGNATURE_REQUIRED` 留空时 dev 关闭、非 dev 强制开启（fail-closed），启动日志会打印生效模式；无签名清单的 prod 演示部署必须显式 `MODEL_SIGNATURE_REQUIRED=false`。显式设置 `MODEL_SIGNATURE_REQUIRED=true` 和 `MODEL_SIGNATURE_PATH` 后，服务启动时校验 SHA-256。模型加载失败默认拒绝启动；只有显式启用 `MODEL_FALLBACK_ENABLED=true` 才会进入 `degraded` 健康状态并返回不可行动的零分。
 
+模型加载失败行为矩阵：
+
+| 场景 | 非 dev（prod/测试） | dev |
+| --- | --- | --- |
+| 工件缺失 | 拒绝启动 | 警告并使用默认模型（`/api/health` 的 `degraded_reasons` 给出类别码） |
+| 验签失败 / 无签名清单 | 拒绝启动（默认强制验签） | 警告并回退默认模型 |
+| 显式 `MODEL_FALLBACK_ENABLED=true` | 进入 `degraded`，返回不可行动的零分 | 同左 |
+
 ## 目录
 
 ```text
 app/
   api.py             FastAPI 应用和 HTTP 契约
   config.py          环境配置
+  degrade.py         降级零分回退
   domain.py          临床事件、风险分数、审计事件和模型卡
-  risk.py            可解释的逻辑回归风险引擎
-  store.py           SQLite 开发实现；生产替换为 PostgreSQL 适配器
-  synthetic.py       合成数据与事件生成器
-  security.py        演示版 RBAC 和操作审计
-  worker.py          批量重评分 worker
+  features.py        训练/serving 共享特征顺序与 landmark 特征
+  main.py            应用装配、生命周期与中间件
   messaging.py       Redis Streams 事件发布与消费适配器
   observability.py   Prometheus 文本指标
-  static/index.html  轻量风险工作台
+  postgres_store.py  PostgreSQL 适配器
+  risk.py            可解释的逻辑回归风险引擎
+  security.py        演示版 RBAC 和操作审计
+  storage.py         存储后端选择
+  store.py           SQLite 开发实现
+  synthetic.py       合成数据与事件生成器
+  worker.py          批量重评分 worker
+  static/
+    index.html       轻量风险工作台（壳页）
+    app.js           工作台前端逻辑
 scripts/
-  train_model.py     纯 Python 梯度下降训练脚本
-  manage_model.py    模型 promote、SHA-256 清单与 rollback
+  baselines.py       NEWS2 基线评分
+  build_features.py  landmark 七元组特征构建
+  derive_labels.py   标签派生（demo CLI）
+  evaluate_model.py  模型评估与三列对比
   generate_demo_data.py
-  docs/
+  import_clinical_data.py  真实数据导入与单事务校验
+  manage_model.py    模型 promote、SHA-256 清单与 rollback
+  train_model.py     纯 Python 梯度下降训练脚本
+  validate.py        滚动时间切分与 bootstrap CI
+docs/
   architecture.md    企业架构和演进路线
-  data-contract.md   事件与风险接口契约
+  data-contract.md   事件与风险接口契约（含结局表型/工件 v2/NEWS2）
   model-card.md      首期模型卡和临床使用边界
   readiness-review.md 项目检查、覆盖矩阵和上线前缺口
   clinical-pilot-protocol.md 临床标签、静默运行和上线验收模板
+  interview-guide.md 面试准备指南
+  data-integration-design.md 数据自助接入设计
 tests/
 ```
 

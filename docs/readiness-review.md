@@ -19,7 +19,7 @@
 | 审计 | 已覆盖（演示级） | 事件评分和人工复核记录，按租户/院区读取 |
 | 多进程本地存储 | 已覆盖（开发级） | SQLite WAL、事务、进程内锁；生产应换 PostgreSQL |
 | API/worker 生命周期 | 已覆盖 | 应用关闭时释放连接；worker 显式注入 Store/Engine |
-| 前端工作台 | 已覆盖（轻量演示） | 风险队列、详情、因素和人工状态；动态内容转义 |
+| 前端工作台 | 已覆盖（轻量演示） | 风险队列、详情、因素和人工状态；动态内容转义（`tests/test_frontend_logic.py` 断言 `safe()` 对 `& < > " '` 全量转义，`node --check` 守卫全文件语法） |
 | 认证与授权 | 已具备生产适配器 | 开发环境 Bearer 演示令牌；生产通过 OIDC/JWT + JWKS 验签、issuer/audience、角色/租户/院区声明映射 |
 | 消息总线 | 已具备 Redis Streams 适配 | `EVENT_BACKEND=redis` 时 API 先落库再入流；worker 使用 consumer group、ACK 和 pending reclaim；医院仍需高可用 Redis/院内消息系统、死信和容量演练 |
 | 生产数据库 | 已具备适配器 | `PostgresStore`、复合租户键、JSONB、连接池和启动建表；仍需医院托管 PostgreSQL 的备份、灾备和迁移审批 |

@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +21,7 @@ class Settings(BaseSettings):
     redis_claim_idle_ms: int = 60000
     redis_max_delivery_attempts: int = 5
     metrics_enabled: bool = True
-    model_signature_required: bool = False
+    model_signature_required: bool | None = None
     model_signature_path: str | None = None
     model_fallback_enabled: bool = False
     model_version: str = "baseline-logistic-v1"
@@ -41,6 +42,12 @@ class Settings(BaseSettings):
     oidc_facility_claim: str = "facility_id"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("model_signature_required", mode="before")
+    @classmethod
+    def _empty_signature_is_unset(cls, value: object) -> object:
+        # compose/.env 常用空串表达"未设置"；pydantic 不接受 "" 作为 bool。
+        return None if value == "" else value
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -65,7 +65,20 @@ class RiskEngine:
             if target_id == "deterioration_24h"
             else settings.readmission_model_path
         )
-        self._signature_required = settings.model_signature_required
+        # Explicit True keeps signature/load failures fatal even with fallback;
+        # a default (None) requirement still verifies the artifact but lets an
+        # explicit MODEL_FALLBACK_ENABLED degrade to zero scores instead.
+        self._signature_explicit = settings.model_signature_required is True
+        required = settings.model_signature_required
+        if required is None:
+            # Fail-closed: outside dev an unset flag means signature required.
+            required = settings.app_env != "dev"
+        self._signature_required = required
+        LOGGER.info(
+            "model signature verification %s (app_env=%s)",
+            "required" if required else "disabled",
+            settings.app_env,
+        )
         self._signature_path = settings.model_signature_path
         self._model_fallback_enabled = settings.model_fallback_enabled
         self._load(model_path)
@@ -74,7 +87,7 @@ class RiskEngine:
         model_path = Path(path)
         if not model_path.exists():
             reason = f"model artifact not found: {model_path}"
-            if self._signature_required or (
+            if self._signature_explicit or (
                 self._strict_model_mode() and not self._fallback_enabled()
             ):
                 raise RuntimeError(f"model artifact not found: {model_path}")
@@ -117,7 +130,7 @@ class RiskEngine:
             self.weights.update(candidate_weights)
             self.bias = candidate_bias
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            if self._signature_required or (
+            if self._signature_explicit or (
                 self._strict_model_mode() and not self._fallback_enabled()
             ):
                 raise RuntimeError(f"invalid model artifact: {model_path}") from exc

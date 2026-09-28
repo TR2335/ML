@@ -151,3 +151,25 @@ def test_non_dev_rejects_demo_auth():
 
 def test_dev_demo_auth_still_works():
     validate_auth_configuration(Settings(app_env="dev", demo_auth_enabled=True))
+
+
+def test_prod_requires_signature_by_default(tmp_path):
+    model = tmp_path / "model.json"
+    write_model(model)
+    # 非 dev 且未显式配置（None → fail-closed 视为 True）：无签名清单必须拒绝
+    with pytest.raises(RuntimeError, match="invalid model artifact"):
+        RiskEngine(Settings(app_env="prod", model_path=str(model)))
+
+
+def test_dev_skips_signature_by_default(tmp_path):
+    model = tmp_path / "model.json"
+    write_model(model, version="dev-v1")
+    engine = RiskEngine(Settings(app_env="dev", model_path=str(model)))
+    assert engine.version == "dev-v1"
+
+
+def test_empty_string_signature_setting_is_unset():
+    from app.config import Settings as SettingsCls
+
+    assert SettingsCls(model_signature_required="").model_signature_required is None
+    assert SettingsCls(model_signature_required=True).model_signature_required is True

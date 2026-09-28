@@ -1,5 +1,8 @@
 import logging
+import os
+import tempfile
 import time
+from pathlib import Path
 
 from .config import get_settings
 from .domain import ClinicalEvent, TargetId
@@ -10,6 +13,39 @@ from .storage import create_store
 from .store import Store
 
 LOGGER = logging.getLogger(__name__)
+HEARTBEAT_PATH = Path(
+    os.environ.get("WORKER_HEARTBEAT_PATH")
+    or Path(tempfile.gettempdir()) / "medintel-worker-heartbeat"
+)
+
+
+def _touch_heartbeat() -> None:
+    """Healthcheck signal: written every live cycle so a hang stops the updates."""
+    try:
+        HEARTBEAT_PATH.touch()
+    except OSError:
+        LOGGER.warning("failed to update worker heartbeat at %s", HEARTBEAT_PATH)
+
+
+def sync_backoff_seconds(base_interval: int, consecutive_failures: int) -> float:
+    """Fixed cadence after success; capped exponential backoff after failures."""
+    if consecutive_failures <= 0:
+        return float(max(base_interval, 1))
+    return float(min(max(base_interval, 1) * 2**consecutive_failures, 3600))
+
+
+def run_sync_worker() -> None:
+    settings = get_settings()
+    failures = 0
+    while True:
+        try:
+            rescore_once()
+            failures = 0
+        except Exception:
+            failures += 1
+            LOGGER.exception("sync rescore cycle failed (%s consecutive)", failures)
+        _touch_heartbeat()
+        time.sleep(sync_backoff_seconds(settings.score_interval_seconds, failures))
 
 
 def rescore_once(store: Store | None = None, engine: RiskEngine | None = None) -> int:
@@ -147,6 +183,7 @@ def run_redis_worker() -> None:
                 metrics.inc("medintel_queue_read_errors_total")
                 LOGGER.exception("Redis stream read failed; retrying")
                 time.sleep(min(max(settings.score_interval_seconds, 2), 30))
+            _touch_heartbeat()
     finally:
         store.close()
 
@@ -156,6 +193,4 @@ if __name__ == "__main__":
     if settings.event_backend == "redis":
         run_redis_worker()
         raise SystemExit(0)
-    while True:
-        rescore_once()
-        time.sleep(settings.score_interval_seconds)
+    run_sync_worker()

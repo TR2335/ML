@@ -4,6 +4,7 @@
 services:
   api:
     build: .
+    restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-dev}
       STORE_PATH: ${STORE_PATH:-/app/data/store.db}
@@ -41,6 +42,7 @@ services:
   worker:
     build: .
     command: python -m app.worker
+    restart: unless-stopped
     environment:
       APP_ENV: ${APP_ENV:-dev}
       STORE_PATH: ${STORE_PATH:-/app/data/store.db}
@@ -72,10 +74,21 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "test -n \"$$(find /tmp/medintel-worker-heartbeat -mmin -10 2>/dev/null)\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
   postgres:
     profiles: ["future-infra"]
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: medintel
       POSTGRES_USER: medintel
@@ -91,9 +104,11 @@ services:
   redis:
     profiles: ["future-infra"]
     image: redis:7-alpine
+    restart: unless-stopped
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:v2.16.2
+    restart: unless-stopped
     profiles: ["registry"]
     command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /mlruns
     ports:

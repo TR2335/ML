@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from app.config import Settings
 from app.domain import ClinicalEvent
 from app.risk import RiskEngine
@@ -90,3 +92,38 @@ def test_reconcile_scores_missing_events(tmp_path):
         assert scores["deterioration_24h"].as_of == datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
         # 已是最新的分数不再重复补算
         assert reconcile(store, engines) == 0
+
+
+def test_sync_loop_survives_rescore_failure(tmp_path, monkeypatch, caplog):
+    import logging
+
+    from app import worker
+    from app.config import get_settings
+
+    calls = {"n": 0}
+
+    def flaky_rescore():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        raise KeyboardInterrupt  # 第二轮停止循环（BaseException，不被 except Exception 吞掉）
+
+    monkeypatch.setattr(worker, "rescore_once", flaky_rescore)
+    monkeypatch.setattr(worker, "HEARTBEAT_PATH", tmp_path / "heartbeat")
+    sleeps: list[float] = []
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: sleeps.append(seconds))
+    with caplog.at_level(logging.ERROR, logger="app.worker"), pytest.raises(KeyboardInterrupt):
+        worker.run_sync_worker()
+    assert calls["n"] == 2  # 失败后循环继续
+    assert "sync rescore cycle failed" in caplog.text
+    assert sleeps == [worker.sync_backoff_seconds(get_settings().score_interval_seconds, 1)]
+    assert (tmp_path / "heartbeat").exists()
+
+
+def test_sync_backoff_grows_and_resets():
+    from app.worker import sync_backoff_seconds
+
+    assert sync_backoff_seconds(300, 0) == 300
+    assert sync_backoff_seconds(300, 1) == 600
+    assert sync_backoff_seconds(300, 2) == 1200
+    assert sync_backoff_seconds(300, 10) == 3600  # 上限

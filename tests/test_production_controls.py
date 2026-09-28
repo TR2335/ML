@@ -173,3 +173,31 @@ def test_empty_string_signature_setting_is_unset():
 
     assert SettingsCls(model_signature_required="").model_signature_required is None
     assert SettingsCls(model_signature_required=True).model_signature_required is True
+
+
+def test_invalid_thresholds_leaves_version_unchanged(tmp_path):
+    model = tmp_path / "model.json"
+    write_model(model)  # version=approved-v1
+    engine = RiskEngine(Settings(model_path=str(model)))
+    assert engine.version == "approved-v1"
+    artifact = json.loads(model.read_text(encoding="utf-8"))
+    artifact["model_version"] = "polluted-v99"
+    artifact["thresholds"] = {"medium": 0.9, "high": 0.5, "critical": 0.95}  # 非递增 → 非法
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(artifact), encoding="utf-8")
+    engine._load(str(bad))  # dev 非严格：仅告警，不抛
+    assert engine.version == "approved-v1"  # 拒绝的工件不得污染任何状态
+    assert engine.thresholds["medium"] == 0.2  # 默认阈值保持不变
+
+
+def test_missing_artifact_reports_reason_in_health(tmp_path):
+    engine = RiskEngine(Settings(model_path=str(tmp_path / "missing.json")))
+    assert engine.degraded is False  # 不改分数行为
+    assert engine.degraded_reason is not None
+    assert "not found" in engine.degraded_reason
+    from app.domain import ClinicalEvent
+
+    score = engine.score(
+        ClinicalEvent(event_type="vital_signs", patient_id="pat-1", encounter_id="enc-1")
+    )
+    assert 0.0 <= score.score <= 1.0  # 默认模型仍可打分

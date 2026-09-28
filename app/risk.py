@@ -93,6 +93,10 @@ class RiskEngine:
                 raise RuntimeError(f"model artifact not found: {model_path}")
             if self._fallback_enabled():
                 self._mark_degraded(reason)
+            else:
+                # Dev fallback keeps serving defaults; surface why in /api/health.
+                LOGGER.warning("%s; serving development defaults", reason)
+                self.degraded_reason = reason
             return
         try:
             self._verify_signature(model_path)
@@ -106,14 +110,11 @@ class RiskEngine:
                 not math.isfinite(value) for value in candidate_weights.values()
             ):
                 raise ValueError("model parameters must be finite")
-            self.version = str(artifact["model_version"])
-            self.algorithm = str(artifact.get("algorithm", self.algorithm))
             artifact_target = artifact.get("target_id")
             if artifact_target is None and self._strict_model_mode():
                 raise ValueError("model target signature is invalid")
             if artifact_target is not None and artifact_target != self.target_id:
                 raise ValueError("model target signature is invalid")
-            self.label_definition = str(artifact.get("label_definition", self.label_definition))
             thresholds = artifact.get("thresholds", self.thresholds)
             candidate_thresholds = {
                 name: float(thresholds[name]) for name in ("medium", "high", "critical")
@@ -126,6 +127,11 @@ class RiskEngine:
                 < 1
             ):
                 raise ValueError("model thresholds are invalid")
+            # Commit only after every validation passed: a rejected artifact
+            # must leave the engine state untouched.
+            self.version = str(artifact["model_version"])
+            self.algorithm = str(artifact.get("algorithm", self.algorithm))
+            self.label_definition = str(artifact.get("label_definition", self.label_definition))
             self.thresholds = candidate_thresholds
             self.weights.update(candidate_weights)
             self.bias = candidate_bias

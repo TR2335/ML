@@ -65,6 +65,31 @@ def transform(row: list[float]) -> list[float]:
     ]
 
 
+def column_stats(rows: list[list[float]]) -> list[dict]:
+    """Median/mean/std per raw column (population std; zero std guarded to 1)."""
+    stats = []
+    for column in zip(*rows):
+        ordered = sorted(column)
+        count = len(ordered)
+        mean = sum(ordered) / count
+        variance = sum((value - mean) ** 2 for value in ordered) / count
+        median = (
+            ordered[count // 2]
+            if count % 2
+            else (ordered[count // 2 - 1] + ordered[count // 2]) / 2
+        )
+        std = math.sqrt(variance) or 1.0
+        stats.append({"median": median, "mean": mean, "std": std})
+    return stats
+
+
+def standardize(rows: list[list[float]], stats: list[dict]) -> list[list[float]]:
+    return [
+        [(value - column["mean"]) / column["std"] for value, column in zip(row, stats)]
+        for row in rows
+    ]
+
+
 def sigmoid(value: float) -> float:
     return 1 / (1 + math.exp(-max(min(value, 30), -30)))
 
@@ -100,7 +125,7 @@ def train(
         grad_w = [0.0] * len(weights)
         grad_b = 0.0
         for row, label in zip(rows, labels):
-            features = transform(row)
+            features = row  # 调用方传入已标准化的行（v2：z 分数空间训练）
             prediction = sigmoid(
                 bias + sum(weight * value for weight, value in zip(weights, features))
             )
@@ -124,13 +149,25 @@ def main() -> None:
     )
     args = parser.parse_args()
     rng = Random(42)
-    rows, labels = zip(*(make_row(rng, args.target_id) for _ in range(args.rows)))
-    bias, weights = train(list(rows), list(labels))
+    generated = [make_row(rng, args.target_id) for _ in range(args.rows)]
+    raw_rows = [item[0] for item in generated]
+    labels = [item[1] for item in generated]
+    stats = column_stats(raw_rows)
+    bias, weights = train(standardize(raw_rows, stats), labels)
     artifact = {
         "model_version": args.version,
         "target_id": args.target_id,
         "algorithm": "logistic_regression_gradient_descent",
         "feature_names": FEATURES,
+        "feature_order": FEATURES,
+        "preprocess": {
+            feature: {
+                "median": round(entry["median"], 8),
+                "mean": round(entry["mean"], 8),
+                "std": round(entry["std"], 8),
+            }
+            for feature, entry in zip(FEATURES, stats)
+        },
         "bias": round(bias, 8),
         "weights": {feature: round(weight, 8) for feature, weight in zip(FEATURES, weights)},
         "training_rows": args.rows,

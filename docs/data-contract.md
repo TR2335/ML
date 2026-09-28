@@ -48,3 +48,10 @@
   `outcome_type` 白名单见 `scripts/derive_labels.py::OUTCOME_TYPES`。
 - 演示数据：高风险患者集合 {2,5,9,14} 在首事件后 48h 发生 RRT；index 网格 1..96h，
   阳性率 96/1728 ≈ 5.6%（落在 5–15% 验收区间）。
+
+## 风险工件 v2（P5）
+
+- `feature_order: [str]`（可选）：推理遍历顺序；存在时必须与 `feature_names` 完全一致，否则启动拒绝。
+- `preprocess: {feature: {median, mean, std}}`（可选，必须伴随 `feature_order`）：
+  打分时标准化 `z = (value - mean) / std`（std≤0 视为 1），缺失特征用 `median` 填补并同时列入 `missing_features`。
+- 无 `feature_order`/`preprocess` 的旧工件行为不变（硬编码中心化变换路径）。

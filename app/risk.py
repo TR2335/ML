@@ -48,6 +48,30 @@ DEFAULT_THRESHOLDS = {
 }
 
 
+def _validated_preprocess(
+    raw: object, feature_order: list[str]
+) -> dict[str, dict[str, float]] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise TypeError("model preprocess block is invalid")
+    stats: dict[str, dict[str, float]] = {}
+    for name in feature_order:
+        entry = raw.get(name)
+        if not isinstance(entry, dict):
+            raise TypeError("model preprocess block is invalid")
+        try:
+            median = float(entry["median"])
+            mean = float(entry["mean"])
+            std = float(entry["std"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("model preprocess block is invalid") from exc
+        if not all(math.isfinite(value) for value in (median, mean, std)):
+            raise ValueError("model preprocess block is invalid")
+        stats[name] = {"median": median, "mean": mean, "std": std}
+    return stats
+
+
 class RiskEngine:
     def __init__(self, settings: Settings, target_id: TargetId = "deterioration_24h"):
         self.target_id = target_id
@@ -58,6 +82,8 @@ class RiskEngine:
         self.algorithm = "logistic_regression"
         self.label_definition = f"demo_{target_id}"
         self.thresholds = DEFAULT_THRESHOLDS[target_id].copy()
+        self.feature_order: list[str] = list(FEATURES)
+        self.preprocess: dict[str, dict[str, float]] | None = None
         self.degraded = False
         self.degraded_reason: str | None = None
         self._model_path = model_path = (
@@ -102,9 +128,26 @@ class RiskEngine:
             self._verify_signature(model_path)
             artifact = json.loads(model_path.read_text(encoding="utf-8"))
             weights = artifact.get("weights")
-            if artifact.get("feature_names") != FEATURES or not isinstance(weights, dict):
-                raise ValueError("model feature signature is invalid")
-            candidate_weights = {feature: float(weights[feature]) for feature in FEATURES}
+            if not isinstance(weights, dict):
+                raise TypeError("model feature signature is invalid")
+            declared_names = artifact.get("feature_names")
+            declared_order = artifact.get("feature_order")
+            if declared_order is None:
+                if declared_names != FEATURES:
+                    raise ValueError("model feature signature is invalid")
+                candidate_order = list(FEATURES)
+                if artifact.get("preprocess") is not None:
+                    # Plan Ruling R11: preprocess requires feature_order.
+                    raise ValueError("model preprocess block is invalid")
+                candidate_preprocess = None
+            else:
+                if declared_names != declared_order:
+                    raise ValueError("model feature signature is invalid")
+                candidate_order = list(declared_order)
+                candidate_preprocess = _validated_preprocess(
+                    artifact.get("preprocess"), candidate_order
+                )
+            candidate_weights = {feature: float(weights[feature]) for feature in candidate_order}
             candidate_bias = float(artifact["bias"])
             if not math.isfinite(candidate_bias) or any(
                 not math.isfinite(value) for value in candidate_weights.values()
@@ -132,6 +175,8 @@ class RiskEngine:
             self.version = str(artifact["model_version"])
             self.algorithm = str(artifact.get("algorithm", self.algorithm))
             self.label_definition = str(artifact.get("label_definition", self.label_definition))
+            self.feature_order = candidate_order
+            self.preprocess = candidate_preprocess
             self.thresholds = candidate_thresholds
             self.weights.update(candidate_weights)
             self.bias = candidate_bias
@@ -199,27 +244,39 @@ class RiskEngine:
 
     def _score(self, event: ClinicalEvent) -> RiskScore:
         payload = event.payload
-        missing_features = [feature for feature in FEATURES if payload.get(feature) is None]
+        feature_order = self.feature_order
+        missing_features = [feature for feature in feature_order if payload.get(feature) is None]
         contributions: list[tuple[str, float, float | None]] = []
         linear = self.bias
-        for feature in FEATURES:
-            raw = payload.get(feature)
-            if raw is None:
-                continue
-            value = float(raw)
-            contribution = self.weights.get(feature, 0) * value
-            # Low blood pressure and oxygen saturation have negative raw values in the model.
-            # Their clinical risk direction is represented by the signed contribution after centering.
-            if feature == "systolic_bp":
-                contribution = self.weights[feature] * (value - 120)
-            elif feature == "spo2":
-                contribution = self.weights[feature] * (value - 96)
-            elif feature == "age":
-                contribution = self.weights[feature] * max(value - 50, 0)
-            elif feature == "temperature":
-                contribution = self.weights[feature] * abs(value - 37.0)
-            linear += contribution
-            contributions.append((feature, contribution, value))
+        if self.preprocess is not None:
+            for name in feature_order:
+                stats = self.preprocess[name]
+                raw = payload.get(name)
+                # Plan Ruling R10: imputed features still count as missing.
+                value = stats["median"] if raw is None else float(raw)
+                std = stats["std"] if stats["std"] > 0 else 1.0
+                contribution = self.weights.get(name, 0.0) * (value - stats["mean"]) / std
+                linear += contribution
+                contributions.append((name, contribution, value))
+        else:
+            for feature in feature_order:
+                raw = payload.get(feature)
+                if raw is None:
+                    continue
+                value = float(raw)
+                contribution = self.weights.get(feature, 0) * value
+                # Low blood pressure and oxygen saturation have negative raw values in the model.
+                # Their clinical risk direction is represented by the signed contribution after centering.
+                if feature == "systolic_bp":
+                    contribution = self.weights[feature] * (value - 120)
+                elif feature == "spo2":
+                    contribution = self.weights[feature] * (value - 96)
+                elif feature == "age":
+                    contribution = self.weights[feature] * max(value - 50, 0)
+                elif feature == "temperature":
+                    contribution = self.weights[feature] * abs(value - 37.0)
+                linear += contribution
+                contributions.append((feature, contribution, value))
         score = round(self._sigmoid(linear), 4)
         band = (
             "critical"
@@ -241,7 +298,7 @@ class RiskEngine:
             score=score,
             band=band,
             top_factors=[
-                RiskFactor(feature=f, label=LABELS[f], contribution=round(c, 3), value=v)
+                RiskFactor(feature=f, label=LABELS.get(f, f), contribution=round(c, 3), value=v)
                 for f, c, v in factors
             ],
             missing_features=missing_features,

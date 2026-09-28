@@ -92,6 +92,24 @@ def test_invalid_clinical_value_is_rejected(tmp_path):
         assert response.status_code == 422
 
 
+def test_boolean_payload_value_returns_422(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/events",
+            json={
+                "event_type": "vital_signs",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "payload": {"age": True},
+            },
+            headers={"Authorization": "Bearer demo-clinician-token"},
+        )
+        assert response.status_code == 422
+
+
 def test_partial_event_uses_existing_feature_snapshot(tmp_path):
     application = create_app(
         Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))

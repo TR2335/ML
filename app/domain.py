@@ -72,7 +72,8 @@ class ClinicalEvent(BaseModel):
                 continue
             value = payload[field]
             if isinstance(value, bool):
-                raise TypeError(f"{field} must be numeric")
+                # ValueError 让 pydantic 包装成 422；TypeError 会漏成 500（T3.3）。
+                raise ValueError(f"{field} must be numeric")  # noqa: TRY004
             try:
                 numeric = float(value)
             except (TypeError, ValueError) as exc:

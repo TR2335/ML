@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
 
 from .config import Settings
@@ -99,11 +99,18 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
 
     @router.get("/patients")
     def patients(
+        response: Response,
         band: str | None = Query(default=None, pattern="^(low|medium|high|critical)$"),
         target_id: TargetId = "deterioration_24h",
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
         principal: Principal = risk_reader,
     ) -> list[dict]:
-        return store.list_patients(principal.tenant_id, principal.facility_id, band, target_id)
+        # Plan Ruling R3: band 过滤与排序都在 Python 侧（两后端同构），
+        # 分页在 API 层对完整列表切片，X-Total-Count 为过滤后总数。
+        rows = store.list_patients(principal.tenant_id, principal.facility_id, band, target_id)
+        response.headers["X-Total-Count"] = str(len(rows))
+        return rows[offset : offset + limit]
 
     @router.get("/patients/{encounter_id}")
     def patient(

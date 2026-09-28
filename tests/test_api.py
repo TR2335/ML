@@ -367,3 +367,73 @@ def test_admin_action_visible_in_facility_audit(tmp_path):
         assert entries, "hospital-01 过滤必须能看到对 hospital-01 资源的管理操作"
         assert entries[0]["resource_facility_id"] == "hospital-01"
         assert entries[0]["actor_facility_id"] == "*"
+
+
+def test_health_does_not_leak_paths(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(application) as client:
+        body = client.get("/api/health").json()
+    reasons = body["degraded_reasons"]
+    assert reasons, "缺失工件应记录 degraded_reason"
+    allowed = {"model_artifact_missing", "model_signature_invalid", "model_artifact_invalid"}
+    for reason in reasons.values():
+        assert reason in allowed, f"health 泄漏原始原因/路径: {reason!r}"
+        assert str(tmp_path) not in reason
+
+
+def test_duplicate_event_with_different_time_rejected_409(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    event = {
+        "event_id": "evt-time-1",
+        "event_type": "lab_result",
+        "patient_id": "pat-001",
+        "encounter_id": "enc-001",
+        "occurred_at": "2026-01-01T06:00:00+00:00",
+        "payload": {"lactate": 3.0},
+    }
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    with TestClient(application) as client:
+        first = client.post("/api/events", json=event, headers=headers)
+        assert first.status_code == 202
+        # 同 id、显式不同的时间 → 冲突而非幂等
+        changed = client.post(
+            "/api/events",
+            json={**event, "occurred_at": "2026-01-01T07:00:00+00:00"},
+            headers=headers,
+        )
+        assert changed.status_code == 409
+        # 同 id、同显式时间（其余一致）→ 仍是幂等重复
+        again = client.post("/api/events", json=event, headers=headers)
+        assert again.status_code == 202
+        assert again.json()["duplicate"] is True
+
+
+def test_patient_pagination(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    with TestClient(application) as client:  # dev 种子共 18 名患者
+        page = client.get("/api/patients?limit=5", headers=headers)
+        assert page.status_code == 200
+        assert len(page.json()) == 5
+        assert page.headers["X-Total-Count"] == "18"
+
+        tail = client.get("/api/patients?limit=5&offset=15", headers=headers)
+        assert len(tail.json()) == 3
+        assert tail.headers["X-Total-Count"] == "18"  # 总数与切片无关
+
+        beyond = client.get("/api/patients?limit=5&offset=999", headers=headers)
+        assert beyond.json() == []
+        assert beyond.headers["X-Total-Count"] == "18"
+
+        filtered = client.get("/api/patients?band=critical&limit=5", headers=headers)
+        total = int(filtered.headers["X-Total-Count"])
+        assert total == len(client.get("/api/patients?band=critical", headers=headers).json())
+
+        too_big = client.get("/api/patients?limit=1001", headers=headers)
+        assert too_big.status_code == 422

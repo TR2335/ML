@@ -1,3 +1,4 @@
+import json
 import math
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -67,6 +68,12 @@ class ClinicalEvent(BaseModel):
     @field_validator("payload")
     @classmethod
     def validate_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(payload, ensure_ascii=False)
+        if len(encoded.encode("utf-8")) > 65536:
+            raise ValueError("payload exceeds 65536 bytes")
+        for field, value in payload.items():
+            if len(json.dumps(value, ensure_ascii=False).encode("utf-8")) > 4096:
+                raise ValueError(f"{field} value exceeds 4096 bytes")
         for field, (minimum, maximum) in CLINICAL_NUMERIC_FIELDS.items():
             if field not in payload:
                 continue

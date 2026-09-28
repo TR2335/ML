@@ -520,3 +520,20 @@ def test_audit_facility_scope_migrates_legacy_rows(tmp_path):
         == "hospital-99"
     )
     reopened.close()
+
+
+def test_store_probe_reads_single_byte(tmp_path, monkeypatch):
+    json_path = tmp_path / "store.json"
+    json_path.write_text('{"looks": "like", "json": true}', encoding="utf-8")
+
+    def _forbid(self):
+        raise AssertionError("read_bytes must not slurp the whole file")
+
+    monkeypatch.setattr("pathlib.Path.read_bytes", _forbid)
+    store = Store(str(json_path))  # 探测改 open().read(1) 后不再触碰 read_bytes
+    assert store.path == tmp_path / "store.db"  # JSON 存储路径仍被识别并改写
+    store.close()
+
+
+def test_event_exists_removed():
+    assert not hasattr(Store, "event_exists")  # WBS T4.5.4：死代码删除

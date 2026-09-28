@@ -59,6 +59,8 @@ POSTGRES_PASSWORD=local docker compose up --build
 | 验签失败 / 无签名清单 | 拒绝启动（默认强制验签） | 警告并回退默认模型 |
 | 显式 `MODEL_FALLBACK_ENABLED=true` | 进入 `degraded`，返回不可行动的零分 | 同左 |
 
+指标：`GET /metrics` 输出 Prometheus 文本格式——计数器带 `# TYPE <family> counter` 指标族声明与标签样本（如 `medintel_http_responses_total{code="200"} 1`），延迟指标为 `summary` 族（`_sum`/`_count`）。
+
 ## 目录
 
 ```text

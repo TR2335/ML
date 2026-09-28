@@ -21,7 +21,8 @@ class Store:
         requested_path = Path(path)
         if requested_path.exists() and requested_path.is_file():
             try:
-                prefix = requested_path.read_bytes()[:1]
+                with requested_path.open("rb") as handle:
+                    prefix = handle.read(1)
             except OSError:
                 prefix = b""
             if prefix in {b"{", b"["}:
@@ -407,15 +408,6 @@ class Store:
                 (encounter_id, patient_id, tenant_id, facility_id),
             ).fetchone()
         return row is not None
-
-    def event_exists(self, event_id: str) -> bool:
-        with self._lock:
-            return (
-                self.connection.execute(
-                    "SELECT 1 FROM events WHERE event_id = ?", (event_id,)
-                ).fetchone()
-                is not None
-            )
 
     def encounter_latest_event_times(self) -> list[tuple[str, str, str, datetime]]:
         """Return (tenant_id, facility_id, encounter_id, max occurred_at) per encounter."""

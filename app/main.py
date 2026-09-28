@@ -48,7 +48,14 @@ def create_app(settings_override=None, store_override=None, engine_override=None
             if owns_store:
                 local_store.close()
 
-    application = FastAPI(title="MedIntel Clinical Safety API", version="0.1.0", lifespan=lifespan)
+    _schema_docs = None if local_settings.app_env != "dev" else "/docs"
+    application = FastAPI(
+        title="MedIntel Clinical Safety API",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url=_schema_docs,
+        redoc_url=_schema_docs,
+    )
 
     @application.middleware("http")
     async def observe_requests(request, call_next):
@@ -56,7 +63,10 @@ def create_app(settings_override=None, store_override=None, engine_override=None
         try:
             response = await call_next(request)
             if local_settings.metrics_enabled:
-                metrics.inc(f"medintel_http_responses_total_{response.status_code}")
+                metrics.inc(
+                    "medintel_http_responses_total",
+                    labels={"code": str(response.status_code)},
+                )
             return response
         finally:
             if local_settings.metrics_enabled:

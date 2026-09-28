@@ -72,6 +72,7 @@ class OIDCAuthenticator:
                 audience=self._audience,
                 issuer=self._issuer,
                 options={"require": ["exp", "sub"]},
+                leeway=30,  # 容忍 30s 院内时钟偏移
             )
             return principal_from_claims(claims, self._settings)
         except Exception as exc:
@@ -130,11 +131,16 @@ def _demo_principal(token: str, settings: Settings) -> Principal | None:
 
 
 def authenticate(authorization: str | None, settings: Settings) -> Principal:
-    if not authorization or not authorization.startswith("Bearer "):
+    if not authorization:
         raise HTTPException(
             status_code=401, detail="bearer_token_required", headers={"WWW-Authenticate": "Bearer"}
         )
-    token = authorization.removeprefix("Bearer ").strip()
+    scheme, _, raw = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not raw.strip():
+        raise HTTPException(
+            status_code=401, detail="bearer_token_required", headers={"WWW-Authenticate": "Bearer"}
+        )
+    token = raw.strip()
     if settings.oidc_enabled:
         return _oidc_authenticator(settings).authenticate(token)
     principal = _demo_principal(token, settings)

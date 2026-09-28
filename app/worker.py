@@ -19,6 +19,11 @@ HEARTBEAT_PATH = Path(
 )
 
 
+def _require_known_backend(settings) -> None:
+    if settings.event_backend not in {"sync", "redis"}:
+        raise ValueError(f"unsupported event backend: {settings.event_backend}")
+
+
 def _touch_heartbeat() -> None:
     """Healthcheck signal: written every live cycle so a hang stops the updates."""
     try:
@@ -190,6 +195,7 @@ def run_redis_worker() -> None:
 
 if __name__ == "__main__":
     settings = get_settings()
+    _require_known_backend(settings)
     if settings.event_backend == "redis":
         run_redis_worker()
         raise SystemExit(0)

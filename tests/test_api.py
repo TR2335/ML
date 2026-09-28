@@ -437,3 +437,63 @@ def test_patient_pagination(tmp_path):
 
         too_big = client.get("/api/patients?limit=1001", headers=headers)
         assert too_big.status_code == 422
+
+
+def test_oversized_payload_rejected_422(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    base = {
+        "event_type": "note",
+        "patient_id": "pat-001",
+        "encounter_id": "enc-001",
+    }
+    with TestClient(application) as client:
+        # 单值 > 4KB → 422
+        too_big_value = client.post(
+            "/api/events",
+            json={**base, "event_id": "evt-too-big-value", "payload": {"comment": "x" * 5000}},
+            headers=headers,
+        )
+        assert too_big_value.status_code == 422
+        # 每个值 ≤4096 但总 payload > 64KB → 422（17 × 4000 ≈ 68KB；键数 17 < 100 上限）
+        too_big_total = client.post(
+            "/api/events",
+            json={
+                **base,
+                "event_id": "evt-too-big-total",
+                "payload": {f"k{i}": "v" * 4000 for i in range(17)},
+            },
+            headers=headers,
+        )
+        assert too_big_total.status_code == 422
+        # 通过校验的正常事件仍可入库（边界守卫）
+        ok = client.post(
+            "/api/events",
+            json={**base, "event_id": "evt-ok", "payload": {"comment": "y" * 4000}},
+            headers=headers,
+        )
+        assert ok.status_code == 202
+
+
+def test_invalid_event_backend_rejected_consistently(tmp_path):
+    import pytest
+
+    from app import worker
+    from app.api import build_router
+    from app.risk import RiskEngine
+    from app.store import Store
+
+    settings = Settings(
+        event_backend="kafka",
+        store_path=str(tmp_path / "store.db"),
+        model_path=str(tmp_path / "missing.json"),
+    )
+    store = Store(str(tmp_path / "store.db"))
+    engine = RiskEngine(settings)
+    with pytest.raises(ValueError, match="unsupported event backend: kafka"):
+        build_router(store, engine, settings)
+    with pytest.raises(ValueError, match="unsupported event backend: kafka"):
+        worker._require_known_backend(settings)
+    store.close()

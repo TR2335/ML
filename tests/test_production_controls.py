@@ -252,6 +252,62 @@ def test_dev_env_file_allows_extra_entries(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
+def test_bearer_prefix_case_insensitive():
+    from app.security import authenticate
+
+    settings = Settings(app_env="dev", demo_auth_enabled=True)
+    principal = authenticate("bearer demo-clinician-token", settings)
+    assert principal.subject == "demo-clinician"
+
+
+@pytest.mark.skipif(
+    __import__("importlib.util", fromlist=["find_spec"]).find_spec("jwt") is None,
+    reason="环境性守卫：PyJWT 属 [prod] extra，本地未安装；leeway 行为由代码审阅 + prod 环境集成覆盖",
+)
+def test_jwt_leeway_allows_25s_clock_skew(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    import jwt as pyjwt
+
+    from app import security
+
+    secret = "test-secret"
+    settings = Settings(
+        app_env="prod",
+        demo_auth_enabled=False,
+        oidc_enabled=True,
+        oidc_issuer="https://issuer.example",
+        oidc_audience="medintel",
+        oidc_jwks_url="https://issuer.example/jwks",
+    )
+
+    class _Key:
+        key = secret
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_signing_key_from_jwt(self, token):
+            return _Key()
+
+    monkeypatch.setattr(pyjwt, "PyJWKClient", _Client)
+    authenticator = security.OIDCAuthenticator(settings)
+    token = pyjwt.encode(
+        {
+            "sub": "clinician-1",
+            "roles": ["clinician"],
+            "tenant_id": "group-demo",
+            "facility_id": "hospital-01",
+            "exp": datetime.now(UTC) - timedelta(seconds=25),
+        },
+        secret,
+        algorithm="HS256",
+    )
+    principal = authenticator.authenticate(token)  # 25s 过期但 leeway=30 → 通过
+    assert principal.subject == "clinician-1"
+
+
 def test_env_postgres_password_allowed_in_prod(tmp_path, monkeypatch):
     """compose 插值取值放在 .env 是最自然的路径；strict 模式不得拒绝该专用变量。"""
     from app.config import get_settings

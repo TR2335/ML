@@ -98,6 +98,38 @@ class PostgresStore:
                 "UPDATE audits SET actor_facility_id = facility_id, "
                 "resource_facility_id = facility_id WHERE resource_facility_id = ''"
             )
+            # Mirror SQLite's score-target migration for pre-target_id databases.
+            connection.execute(
+                "ALTER TABLE scores ADD COLUMN IF NOT EXISTS target_id "
+                "TEXT NOT NULL DEFAULT 'deterioration_24h'"
+            )
+            # Mirror the composite-tenant PK scope for legacy global-PK tables
+            # (same DO-block pattern as events, T4.5 item 5).
+            for table, key_columns in (
+                ("patients", ("tenant_id", "encounter_id")),
+                ("scores", ("tenant_id", "encounter_id", "target_id")),
+            ):
+                connection.execute(
+                    f"""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM pg_constraint c
+                            WHERE c.conname = '{table}_pkey'
+                              AND c.conrelid = '{table}'::regclass
+                              AND (
+                                  SELECT array_agg(a.attname::text ORDER BY k.ord)
+                                  FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+                                  JOIN pg_attribute a
+                                    ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+                              ) <> ARRAY[{", ".join(f"'{k}'" for k in key_columns)}]
+                        ) THEN
+                            ALTER TABLE {table} DROP CONSTRAINT {table}_pkey;
+                            ALTER TABLE {table} ADD PRIMARY KEY ({", ".join(key_columns)});
+                        END IF;
+                    END $$;
+                    """
+                )
             # Re-key a pre-existing global-PK events table to (tenant_id, event_id).
             connection.execute(
                 """

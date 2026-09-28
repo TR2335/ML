@@ -52,3 +52,28 @@ def test_bootstrap_ci_coverage_sane():
         _, lo_r, hi_r = bootstrap_metric(sample, sample, mean_metric, n=200, seed=rep + 10_000)
         covered += int(lo_r <= 0.3 <= hi_r)
     assert covered >= 85, f"覆盖率 {covered}/{reps} 过低"
+
+
+def test_rolling_time_split_keeps_duplicate_timestamps_on_one_side():
+    from datetime import UTC, datetime, timedelta
+
+    from scripts.validate import rolling_time_split
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for tick in range(50):  # 50 个时刻 × 每刻 3 行（真实数据常见同刻多 landmark）
+        for copy in range(3):
+            rows.append(
+                {
+                    "encounter_id": f"enc-{tick:03d}-{copy}",
+                    "index_time": (base + timedelta(hours=tick)).isoformat(),
+                    "label": str((tick + copy) % 2),
+                }
+            )
+    folds = rolling_time_split(rows, n_splits=3)
+    assert len(folds) == 3
+    for train, test in folds:
+        train_max = max(row["index_time"] for row in train)
+        test_min = min(row["index_time"] for row in test)
+        # 同刻行必须整体落同一侧：train 严格早于 test（不允许 TIE）
+        assert train_max < test_min, f"边界 TIE: train_max={train_max} test_min={test_min}"

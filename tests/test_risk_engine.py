@@ -183,3 +183,42 @@ def test_preprocess_without_feature_order_is_rejected(tmp_path):
                 model_signature_required=False,
             )
         )
+
+
+def test_preprocess_imputed_feature_still_reported_missing(tmp_path):
+    """Plan Ruling R10：median 填补的特征参与计算，但仍须列入 missing_features。"""
+    import json
+    import math
+
+    from app.synthetic import FEATURES
+
+    path = tmp_path / "model.json"
+    weights = {feature: 0.0 for feature in FEATURES}
+    weights["heart_rate"] = 1.0
+    path.write_text(
+        json.dumps(
+            {
+                "model_version": "impute-v1",
+                "feature_names": FEATURES,
+                "feature_order": FEATURES,
+                "preprocess": {
+                    feature: (
+                        {"median": 50.0, "mean": 100.0, "std": 20.0}
+                        if feature == "heart_rate"
+                        else {"median": 0.0, "mean": 0.0, "std": 1.0}
+                    )
+                    for feature in FEATURES
+                },
+                "weights": weights,
+                "bias": 0.0,
+                "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine = RiskEngine(Settings(model_path=str(path)))
+    score = engine.score(event({}))
+    # 缺失 → median=50 填补 → z=(50-100)/20=-2.5 → sigmoid(-2.5)
+    assert abs(score.score - 1 / (1 + math.exp(2.5))) < 0.001
+    assert "heart_rate" in score.missing_features
+    assert "lactate" in score.missing_features

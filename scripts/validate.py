@@ -29,23 +29,45 @@ def _row_time(row: dict) -> datetime:
 def rolling_time_split(rows: list[dict], n_splits: int) -> list[tuple[list[dict], list[dict]]]:
     """Expanding-window folds over time-ordered rows.
 
-    Rows are sorted by time, cut into n_splits + 1 contiguous blocks; fold i
-    trains on blocks 0..i-1 and tests on block i. Test blocks are disjoint and
-    every train row precedes every test row (no temporal leakage).
+    Rows are sorted by time and grouped by timestamp; groups are cut into
+    n_splits + 1 contiguous blocks (a timestamp never straddles a boundary),
+    so fold i trains on blocks 0..i-1 and tests on block i: test blocks are
+    disjoint and every train row is strictly earlier than every test row —
+    including when several rows share one timestamp (Review Focus #5).
     """
     if n_splits < 1:
         raise ValueError("n_splits must be >= 1")
     if len(rows) < n_splits + 1:
         raise ValueError(f"need at least {n_splits + 1} rows for {n_splits} splits")
     ordered = sorted(rows, key=_row_time)
-    count = len(ordered) // (n_splits + 1)
-    extra = len(ordered) % (n_splits + 1)
+    groups: list[list[dict]] = []
+    for row in ordered:
+        if groups and _row_time(groups[-1][0]) == _row_time(row):
+            groups[-1].append(row)
+        else:
+            groups.append([row])
+    if len(groups) < n_splits + 1:
+        raise ValueError(
+            f"need at least {n_splits + 1} distinct timestamps so every test fold "
+            "starts strictly after its training window"
+        )
+    total = len(ordered)
     blocks: list[list[dict]] = []
-    start = 0
-    for index in range(n_splits + 1):
-        length = count + (1 if index < extra else 0)
-        blocks.append(ordered[start : start + length])
-        start += length
+    group_index = 0
+    assigned = 0
+    remaining = len(groups)
+    for block_i in range(1, n_splits + 2):
+        blocks_after = n_splits + 1 - block_i
+        target = block_i * total / (n_splits + 1)
+        block: list[dict] = []
+        while remaining > blocks_after:
+            if block and assigned + len(block) >= target:
+                break
+            block.extend(groups[group_index])
+            group_index += 1
+            remaining -= 1
+        assigned += len(block)
+        blocks.append(block)
     folds: list[tuple[list[dict], list[dict]]] = []
     for index in range(1, n_splits + 1):
         train = [row for block in blocks[:index] for row in block]

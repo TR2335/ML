@@ -48,7 +48,7 @@ ruff check app scripts tests
 ruff format --check app scripts tests
 python -m compileall -q app scripts tests
 pip check: No broken requirements found
-docker compose config --quiet
+POSTGRES_PASSWORD=ci docker compose config --quiet
 ```
 
 ## P0 使用方式

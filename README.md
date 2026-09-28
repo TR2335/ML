@@ -9,10 +9,10 @@
 
 ## 快速启动
 
-需要 Python 3.11+。推荐使用 Docker：
+需要 Python 3.11+。推荐使用 Docker（postgres 服务口令为必填项，内联提供或写入 `.env` 的 `POSTGRES_PASSWORD=`，部署时必须改为强口令）：
 
 ```powershell
-docker compose up --build
+POSTGRES_PASSWORD=local docker compose up --build
 ```
 
 打开 <http://localhost:8000> 查看风险工作台，或打开 <http://localhost:8000/docs> 使用 API。
@@ -47,9 +47,9 @@ docker compose up --build
 
 生产异步事件：设置 `EVENT_BACKEND=redis`、`REDIS_URL` 和 `REDIS_STREAM` 后，API 会先持久化事件再写入 Redis Stream，worker 使用 consumer group 计算两个目标并 ACK；处理失败的消息会留在 pending 列表中，下一次 worker 会尝试 reclaim，超过 `REDIS_MAX_DELIVERY_ATTEMPTS` 后转入死信流。生产应为 Redis 配置高可用、持久化、容量和死信运维策略。
 
-本地启动 Redis/PostgreSQL 组合时使用 `docker compose --profile future-infra up --build`，并在环境中设置 `STORAGE_BACKEND=postgres` 或 `EVENT_BACKEND=redis`。
+本地启动 Redis/PostgreSQL 组合时使用 `POSTGRES_PASSWORD=local docker compose --profile future-infra up --build`，并在环境中设置 `STORAGE_BACKEND=postgres` 或 `EVENT_BACKEND=redis`。
 
-模型完整性：`scripts/manage_model.py promote` 会把模型按 target/version 保存并生成 `manifest.json`；设置 `MODEL_SIGNATURE_REQUIRED=true` 和 `MODEL_SIGNATURE_PATH` 后，服务启动时会校验 SHA-256。模型加载失败默认拒绝启动；只有显式启用 `MODEL_FALLBACK_ENABLED=true` 才会进入 `degraded` 健康状态并返回不可行动的零分。
+模型完整性：`scripts/manage_model.py promote` 会把模型按 target/version 保存并生成 `manifest.json`。签名要求默认按环境判定：`MODEL_SIGNATURE_REQUIRED` 留空时 dev 关闭、非 dev 强制开启（fail-closed），启动日志会打印生效模式；无签名清单的 prod 演示部署必须显式 `MODEL_SIGNATURE_REQUIRED=false`。显式设置 `MODEL_SIGNATURE_REQUIRED=true` 和 `MODEL_SIGNATURE_PATH` 后，服务启动时校验 SHA-256。模型加载失败默认拒绝启动；只有显式启用 `MODEL_FALLBACK_ENABLED=true` 才会进入 `degraded` 健康状态并返回不可行动的零分。
 
 ## 目录
 

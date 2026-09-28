@@ -470,3 +470,53 @@ def test_target_scoped_scores_are_independent(tmp_path):
     scores = store.get_scores("enc-1", "group-demo", "hospital-01")
     assert scores["deterioration_24h"].model_version == "deterioration-v1"
     assert scores["readmission_30d"].model_version == "readmission-v1"
+
+
+def test_audit_facility_scope_migrates_legacy_rows(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "store.db"
+    legacy_json = (
+        '{"audit_id":"audit-old","action":"legacy","actor":"x","resource_type":"event",'
+        '"resource_id":"e-1","tenant_id":"group-demo","facility_id":"hospital-01",'
+        '"occurred_at":"2026-01-01T00:00:00+00:00","detail":{}}'
+    )
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        """
+        CREATE TABLE audits (
+            audit_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            facility_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            data_json TEXT NOT NULL
+        );
+        """
+    )
+    raw.execute(
+        "INSERT INTO audits VALUES (?, ?, ?, ?, ?)",
+        ("audit-old", "group-demo", "hospital-01", "2026-01-01T00:00:00+00:00", legacy_json),
+    )
+    raw.commit()
+    raw.close()
+
+    store = Store(str(path))
+    row = store.connection.execute(
+        "SELECT actor_facility_id, resource_facility_id FROM audits WHERE audit_id='audit-old'"
+    ).fetchone()
+    assert row["actor_facility_id"] == "hospital-01"
+    assert row["resource_facility_id"] == "hospital-01"  # 回填现值
+    # 幂等：已写入的值不被重复回填覆盖（Plan Ruling R4）
+    store.connection.execute(
+        "UPDATE audits SET resource_facility_id='hospital-99' WHERE audit_id='audit-old'"
+    )
+    store.connection.commit()
+    store.close()
+    reopened = Store(str(path))
+    assert (
+        reopened.connection.execute(
+            "SELECT resource_facility_id FROM audits WHERE audit_id='audit-old'"
+        ).fetchone()["resource_facility_id"]
+        == "hospital-99"
+    )
+    reopened.close()

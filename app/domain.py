@@ -121,6 +121,8 @@ class AuditEvent(BaseModel):
     resource_type: str
     resource_id: str
     tenant_id: str = "group-demo"
-    facility_id: str = "hospital-01"
+    facility_id: str = "hospital-01"  # 兼容字段：迁移期与 actor_facility_id 同值
+    actor_facility_id: str = ""
+    resource_facility_id: str = ""
     occurred_at: datetime = Field(default_factory=utc_now)
     detail: dict[str, Any] = Field(default_factory=dict)

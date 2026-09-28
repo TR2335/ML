@@ -54,6 +54,7 @@ class Store:
             self._migrate_legacy_scope_keys()
             self._migrate_score_targets()
             self._migrate_event_tenant_scope()
+            self._migrate_audit_facility_scope()
             with self.connection:
                 self.connection.executescript(
                     """
@@ -93,6 +94,8 @@ class Store:
                     audit_id TEXT PRIMARY KEY,
                     tenant_id TEXT NOT NULL,
                     facility_id TEXT NOT NULL,
+                    actor_facility_id TEXT NOT NULL DEFAULT '',
+                    resource_facility_id TEXT NOT NULL DEFAULT '',
                     occurred_at TEXT NOT NULL,
                     data_json TEXT NOT NULL
                 );
@@ -260,6 +263,33 @@ class Store:
                 raise
         finally:
             self.connection.execute("PRAGMA foreign_keys=ON")
+
+    def _migrate_audit_facility_scope(self) -> None:
+        """Split legacy audit facility into actor/resource columns.
+
+        Column adds are conditional; the backfill only touches rows the split
+        never wrote, so repeated startups (or a crash between ALTER and
+        UPDATE) can never overwrite explicit values (Plan Ruling R4).
+        """
+        columns = [
+            row["name"] for row in self.connection.execute("PRAGMA table_info(audits)").fetchall()
+        ]
+        if not columns:
+            return  # fresh database: CREATE TABLE includes the columns
+        if "actor_facility_id" not in columns:
+            self.connection.execute(
+                "ALTER TABLE audits ADD COLUMN actor_facility_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "resource_facility_id" not in columns:
+            self.connection.execute(
+                "ALTER TABLE audits ADD COLUMN resource_facility_id TEXT NOT NULL DEFAULT ''"
+            )
+        with self.connection:
+            self.connection.execute(
+                "UPDATE audits SET actor_facility_id = facility_id, "
+                "resource_facility_id = facility_id "
+                "WHERE actor_facility_id = '' OR resource_facility_id = ''"
+            )
 
     @staticmethod
     def _json(value: Any) -> str:
@@ -583,11 +613,15 @@ class Store:
     def add_audit(self, event: AuditEvent) -> None:
         with self._lock, self.connection:
             self.connection.execute(
-                "INSERT OR IGNORE INTO audits(audit_id, tenant_id, facility_id, occurred_at, data_json) VALUES (?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO audits(audit_id, tenant_id, facility_id, "
+                "actor_facility_id, resource_facility_id, occurred_at, data_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.audit_id,
                     event.tenant_id,
                     event.facility_id,
+                    event.actor_facility_id,
+                    event.resource_facility_id,
                     event.occurred_at.isoformat(),
                     self._json(event.model_dump(mode="json")),
                 ),
@@ -600,7 +634,7 @@ class Store:
             query = "SELECT data_json FROM audits WHERE tenant_id = ?"
             params: list[Any] = [tenant_id]
             if facility_id:
-                query += " AND facility_id = ?"
+                query += " AND resource_facility_id = ?"
                 params.append(facility_id)
             query += " ORDER BY occurred_at DESC LIMIT ?"
             params.append(limit)

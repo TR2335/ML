@@ -162,7 +162,9 @@ def audit(
     resource_type: str,
     resource_id: str,
     detail: dict,
+    resource_facility_id: str | None = None,
 ) -> None:
+    actor_facility = principal.facility_id or "*"
     store.add_audit(
         AuditEvent(
             action=action,
@@ -170,7 +172,9 @@ def audit(
             resource_type=resource_type,
             resource_id=resource_id,
             tenant_id=principal.tenant_id,
-            facility_id=principal.facility_id or "*",
+            facility_id=actor_facility,
+            actor_facility_id=actor_facility,
+            resource_facility_id=resource_facility_id or actor_facility,
             detail={**detail, "role": principal.role},
         )
     )

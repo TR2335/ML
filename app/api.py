@@ -204,6 +204,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
                     "event",
                     event.event_id,
                     {"error": str(exc)},
+                    event.facility_id,
                 )
                 raise HTTPException(status_code=503, detail="event_queue_unavailable") from exc
             metrics.inc("medintel_events_queued_total")
@@ -214,6 +215,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
                 "event",
                 event.event_id,
                 {"message_id": message_id},
+                event.facility_id,
             )
             return {"accepted": True, "duplicate": False, "queued": True, "message_id": message_id}
         snapshot = store.feature_snapshot(
@@ -241,6 +243,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
                 "models": {item.target_id: item.model_version for item in scored},
                 "missing_features": {item.target_id: item.missing_features for item in scored},
             },
+            event.facility_id,
         )
         return {
             "accepted": True,
@@ -274,6 +277,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
             "risk_score",
             score.score_id,
             {"status": request.status, "note": request.note, "target_id": request.target_id},
+            score.facility_id,
         )
         return score.model_dump(mode="json")
 

@@ -338,3 +338,32 @@ def test_auth_dependency_runs_in_threadpool(tmp_path, monkeypatch):
         )
     assert response.status_code == 200
     assert observed["in_event_loop"] is False
+
+
+def test_admin_action_visible_in_facility_audit(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(application) as client:
+        # admin（facility None → "*"）复核 hospital-01 的评分
+        review = client.post(
+            "/api/patients/enc-001/review",
+            json={
+                "status": "acknowledged",
+                "note": "跨院区管理员处理",
+                "target_id": "deterioration_24h",
+            },
+            headers={"Authorization": "Bearer demo-admin-token"},
+        )
+        assert review.status_code == 200
+        score_id = review.json()["score_id"]
+        audit = client.get("/api/audit", headers={"Authorization": "Bearer demo-quality-token"})
+        assert audit.status_code == 200
+        entries = [
+            item
+            for item in audit.json()
+            if item["action"] == "human_review" and item["resource_id"] == score_id
+        ]
+        assert entries, "hospital-01 过滤必须能看到对 hospital-01 资源的管理操作"
+        assert entries[0]["resource_facility_id"] == "hospital-01"
+        assert entries[0]["actor_facility_id"] == "*"

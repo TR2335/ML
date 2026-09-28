@@ -79,10 +79,24 @@ class PostgresStore:
                     audit_id TEXT PRIMARY KEY,
                     tenant_id TEXT NOT NULL,
                     facility_id TEXT NOT NULL,
+                    actor_facility_id TEXT NOT NULL DEFAULT '',
+                    resource_facility_id TEXT NOT NULL DEFAULT '',
                     occurred_at TIMESTAMPTZ NOT NULL,
                     data_json JSONB NOT NULL
                 );
                 """
+            )
+            connection.execute(
+                "ALTER TABLE audits ADD COLUMN IF NOT EXISTS "
+                "actor_facility_id TEXT NOT NULL DEFAULT ''"
+            )
+            connection.execute(
+                "ALTER TABLE audits ADD COLUMN IF NOT EXISTS "
+                "resource_facility_id TEXT NOT NULL DEFAULT ''"
+            )
+            connection.execute(
+                "UPDATE audits SET actor_facility_id = facility_id, "
+                "resource_facility_id = facility_id WHERE resource_facility_id = ''"
             )
             # Re-key a pre-existing global-PK events table to (tenant_id, event_id).
             connection.execute(
@@ -433,11 +447,15 @@ class PostgresStore:
     def add_audit(self, event: AuditEvent) -> None:
         with self.pool.connection() as connection:
             connection.execute(
-                "INSERT INTO audits(audit_id, tenant_id, facility_id, occurred_at, data_json) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                "INSERT INTO audits(audit_id, tenant_id, facility_id, actor_facility_id, "
+                "resource_facility_id, occurred_at, data_json) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                 (
                     event.audit_id,
                     event.tenant_id,
                     event.facility_id,
+                    event.actor_facility_id,
+                    event.resource_facility_id,
                     event.occurred_at,
                     self._json(event.model_dump(mode="json")),
                 ),
@@ -449,7 +467,7 @@ class PostgresStore:
         query = "SELECT data_json FROM audits WHERE tenant_id=%s"
         params: list[Any] = [tenant_id]
         if facility_id:
-            query += " AND facility_id=%s"
+            query += " AND resource_facility_id=%s"
             params.append(facility_id)
         query += " ORDER BY occurred_at DESC LIMIT %s"
         params.append(limit)

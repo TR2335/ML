@@ -15,3 +15,4 @@ mlruns/
 dist/
 build/
 *.egg-info/
+data/*.csv

@@ -3,6 +3,8 @@ from functools import lru_cache
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+DEFAULT_DATABASE_URL = "postgresql://medintel:medintel@postgres:5432/medintel"
+
 
 class Settings(BaseSettings):
     app_env: str = "dev"
@@ -11,7 +13,7 @@ class Settings(BaseSettings):
     model_path: str = "data/model.json"
     readmission_model_path: str = "data/readmission_model.json"
     storage_backend: str = "sqlite"
-    database_url: str = "postgresql://medintel:medintel@postgres:5432/medintel"
+    database_url: str = DEFAULT_DATABASE_URL
     event_backend: str = "sync"
     redis_url: str = "redis://redis:6379/0"
     redis_stream: str = "medintel:clinical-events"
@@ -40,6 +42,7 @@ class Settings(BaseSettings):
     oidc_role_claim: str = "roles"
     oidc_tenant_claim: str = "tenant_id"
     oidc_facility_claim: str = "facility_id"
+    mlflow_tracking_uri: str = ""  # 供外部工具读取；保住 .env.example 的合法条目（Ruling R3）
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -54,6 +57,30 @@ class Settings(BaseSettings):
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
 
 
+class StrictSettings(Settings):
+    """Non-dev parsing: unknown .env entries are rejected (Plan Ruling R2:
+    OS environment variables have no prefix and cannot be detected)."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="forbid")
+
+
+def build_settings() -> Settings:
+    probe = Settings()
+    if probe.app_env == "dev":
+        return probe
+    return StrictSettings()
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return build_settings()
+
+
+def validate_production_configuration(settings: Settings) -> None:
+    if settings.app_env == "dev":
+        return
+    if settings.storage_backend == "postgres" and settings.database_url == DEFAULT_DATABASE_URL:
+        raise RuntimeError(
+            "DATABASE_URL must be set to a site-specific value outside dev "
+            "(refusing the bundled default credentials)"
+        )

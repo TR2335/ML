@@ -201,3 +201,52 @@ def test_missing_artifact_reports_reason_in_health(tmp_path):
         ClinicalEvent(event_type="vital_signs", patient_id="pat-1", encounter_id="enc-1")
     )
     assert 0.0 <= score.score <= 1.0  # 默认模型仍可打分
+
+
+def test_prod_rejects_default_database_url():
+    from app.config import validate_production_configuration
+
+    with pytest.raises(RuntimeError, match="DATABASE_URL"):
+        validate_production_configuration(Settings(app_env="prod", storage_backend="postgres"))
+    # dev 不检查；显式改过的 URL 通过；sqlite 后端不检查
+    validate_production_configuration(Settings(app_env="dev", storage_backend="postgres"))
+    validate_production_configuration(
+        Settings(
+            app_env="prod",
+            storage_backend="postgres",
+            database_url="postgresql://user:pass@db.example:5432/other",
+        )
+    )
+    validate_production_configuration(Settings(app_env="prod", storage_backend="sqlite"))
+
+
+def test_prod_rejects_unknown_setting(tmp_path, monkeypatch):
+    from pydantic import ValidationError
+
+    from app.config import get_settings
+
+    (tmp_path / ".env").write_text("APP_ENV=prod\nTYPOED_SETTING=1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValidationError):
+            get_settings()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_dev_env_file_allows_extra_entries(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    (tmp_path / ".env").write_text(
+        "APP_ENV=dev\nSOME_TOOL_VAR=1\nMLFLOW_TRACKING_URI=http://mlflow:5000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert settings.app_env == "dev"
+        assert settings.mlflow_tracking_uri == "http://mlflow:5000"
+    finally:
+        get_settings.cache_clear()

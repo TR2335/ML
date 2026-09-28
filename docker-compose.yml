@@ -92,7 +92,7 @@ services:
     environment:
       POSTGRES_DB: medintel
       POSTGRES_USER: medintel
-      POSTGRES_PASSWORD: medintel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
     volumes:
       - medintel_postgres:/var/lib/postgresql/data
     healthcheck:

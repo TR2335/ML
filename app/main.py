@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
 from .api import build_router
-from .config import get_settings
+from .config import get_settings, validate_production_configuration
 from .observability import metrics
 from .risk import RiskEngine
 from .security import validate_auth_configuration
@@ -19,6 +19,7 @@ from .synthetic import demo_patients
 def create_app(settings_override=None, store_override=None, engine_override=None) -> FastAPI:
     local_settings = settings_override or get_settings()
     validate_auth_configuration(local_settings)
+    validate_production_configuration(local_settings)
     owns_store = store_override is None
     local_store = store_override or create_store(local_settings)
     local_engine = engine_override or RiskEngine(local_settings)

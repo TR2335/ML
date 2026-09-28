@@ -94,7 +94,7 @@ class PostgresStore:
                         WHERE c.conname = 'events_pkey'
                           AND c.conrelid = 'events'::regclass
                           AND (
-                              SELECT array_agg(a.attname ORDER BY k.ord)
+                              SELECT array_agg(a.attname::text ORDER BY k.ord)
                               FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
                               JOIN pg_attribute a
                                 ON a.attrelid = c.conrelid AND a.attnum = k.attnum

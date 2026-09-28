@@ -195,20 +195,39 @@ class Store:
 
     def _migrate_event_tenant_scope(self) -> None:
         """Re-key events to (tenant_id, event_id) so cross-tenant ids coexist."""
+        residue = self.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events_legacy'"
+        ).fetchone()
+        if residue:
+            raise RuntimeError(
+                "Leftover table events_legacy found: a previous events migration "
+                "was interrupted. If the events table exists with PRIMARY KEY "
+                "(tenant_id, event_id), the data was already copied — drop "
+                "events_legacy and restart. Otherwise restore events from "
+                "events_legacy manually before restarting."
+            )
         table = self.connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'events'"
         ).fetchone()
         if not table:
             return
         columns = self.connection.execute("PRAGMA table_info(events)").fetchall()
-        primary_key = [row["name"] for row in columns if row["pk"]]
+        # PRAGMA 表行按表列序返回；按 pk 序号还原真正的主键键序再比较。
+        primary_key = [
+            row["name"]
+            for row in sorted((row for row in columns if row["pk"]), key=lambda row: row["pk"])
+        ]
         if primary_key == ["tenant_id", "event_id"]:
             return
         self.connection.execute("PRAGMA foreign_keys=OFF")
         try:
-            with self.connection:
+            # Rebuild in one transaction: DDL is transactional in SQLite, and an
+            # explicit BEGIN (as in import_records) keeps a crash from leaving a
+            # half-rebuilt events table behind.
+            self.connection.execute("BEGIN IMMEDIATE")
+            try:
                 self.connection.execute("ALTER TABLE events RENAME TO events_legacy")
-                self.connection.executescript(
+                self.connection.execute(
                     """
                     CREATE TABLE events (
                         event_id TEXT NOT NULL,
@@ -221,15 +240,24 @@ class Store:
                         FOREIGN KEY (tenant_id, encounter_id)
                             REFERENCES patients(tenant_id, encounter_id),
                         PRIMARY KEY (tenant_id, event_id)
-                    );
-                    CREATE INDEX IF NOT EXISTS events_tenant_encounter_time
-                        ON events(tenant_id, encounter_id, occurred_at);
-                    INSERT INTO events(event_id, encounter_id, patient_id, tenant_id, facility_id, occurred_at, data_json)
-                        SELECT event_id, encounter_id, patient_id, tenant_id, facility_id, occurred_at, data_json
-                        FROM events_legacy;
-                    DROP TABLE events_legacy;
+                    )
                     """
                 )
+                self.connection.execute(
+                    "CREATE INDEX IF NOT EXISTS events_tenant_encounter_time "
+                    "ON events(tenant_id, encounter_id, occurred_at)"
+                )
+                self.connection.execute(
+                    "INSERT INTO events(event_id, encounter_id, patient_id, tenant_id, "
+                    "facility_id, occurred_at, data_json) "
+                    "SELECT event_id, encounter_id, patient_id, tenant_id, facility_id, "
+                    "occurred_at, data_json FROM events_legacy"
+                )
+                self.connection.execute("DROP TABLE events_legacy")
+                self.connection.execute("COMMIT")
+            except BaseException:
+                self.connection.execute("ROLLBACK")
+                raise
         finally:
             self.connection.execute("PRAGMA foreign_keys=ON")
 

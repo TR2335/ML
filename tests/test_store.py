@@ -307,20 +307,66 @@ def test_event_schema_migration_preserves_rows(tmp_path):
 
     store = Store(str(path))  # 触发 _create_schema → 迁移
     with store._lock:
-        pk = [
-            row["name"]
+        pk = {
+            row["name"]: row["pk"]
             for row in store.connection.execute("PRAGMA table_info(events)").fetchall()
             if row["pk"]
-        ]
+        }
         count = store.connection.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"]
-    # PRAGMA 按表列序返回 pk 列而非键序，故用集合断言（仍可区分旧结构 ['event_id']）
-    assert set(pk) == {"tenant_id", "event_id"}
+    # PRAGMA 按表列序返回行；pk 序号携带主键键序（tenant_id 为第一键）
+    assert pk == {"tenant_id": 1, "event_id": 2}
     assert count == 2
     store.close()
     reopened = Store(str(path))  # 迁移幂等：再次打开无异常
     with reopened._lock:
         assert reopened.connection.execute("SELECT COUNT(*) AS n FROM events").fetchone()["n"] == 2
     reopened.close()
+
+
+def test_event_tenant_scope_migration_is_noop_when_already_migrated(tmp_path):
+    """已迁移的库再次触发迁移必须是 no-op（PRAGMA 按表列序返回，检测须按主键键序）。"""
+    store = Store(str(tmp_path / "store.db"))
+    statements: list[str] = []
+    store.connection.set_trace_callback(statements.append)
+    store._migrate_event_tenant_scope()
+    store.connection.set_trace_callback(None)
+    ddl = [
+        sql
+        for sql in statements
+        if any(k in sql.upper() for k in ("CREATE TABLE", "ALTER TABLE", "DROP TABLE"))
+    ]
+    assert ddl == [], f"迁移体在已迁移的库上重跑了: {ddl}"
+    store.close()
+
+
+def test_stale_events_legacy_fails_fast_with_guidance(tmp_path):
+    """上次迁移中断留下的 events_legacy 残留必须显式报错，不得静默建空表丢数据。"""
+    import sqlite3
+
+    import pytest
+
+    path = tmp_path / "store.db"
+    raw = sqlite3.connect(path)
+    raw.executescript(
+        """
+        CREATE TABLE events_legacy (
+            event_id TEXT PRIMARY KEY,
+            encounter_id TEXT NOT NULL,
+            patient_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            facility_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            data_json TEXT NOT NULL
+        );
+        INSERT INTO events_legacy VALUES
+        ('evt-orphan', 'enc-1', 'pat-1', 'tenant-a', 'facility-a', '2026-01-01T06:00:00+00:00', '{}');
+        """
+    )
+    raw.commit()
+    raw.close()
+
+    with pytest.raises(RuntimeError, match="events_legacy"):
+        Store(str(path))
 
 
 def test_upsert_score_uses_immediate_transaction(tmp_path):

@@ -250,3 +250,34 @@ def test_dev_env_file_allows_extra_entries(tmp_path, monkeypatch):
         assert settings.mlflow_tracking_uri == "http://mlflow:5000"
     finally:
         get_settings.cache_clear()
+
+
+def test_env_postgres_password_allowed_in_prod(tmp_path, monkeypatch):
+    """compose 插值取值放在 .env 是最自然的路径；strict 模式不得拒绝该专用变量。"""
+    from app.config import get_settings
+
+    (tmp_path / ".env").write_text(
+        "APP_ENV=prod\nPOSTGRES_PASSWORD=secret\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert settings.postgres_password == "secret"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_dev_env_selector_typo_raises(tmp_path, monkeypatch):
+    """.env 里 APP_ENV 键名拼错（如 APP_ENB）不得静默回落 dev（fail-open）。"""
+    from app.config import get_settings
+
+    (tmp_path / ".env").write_text("APP_ENB=prod\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="APP_ENB"):
+            get_settings()
+    finally:
+        get_settings.cache_clear()

@@ -1,4 +1,6 @@
+import difflib
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -43,6 +45,7 @@ class Settings(BaseSettings):
     oidc_tenant_claim: str = "tenant_id"
     oidc_facility_claim: str = "facility_id"
     mlflow_tracking_uri: str = ""  # 供外部工具读取；保住 .env.example 的合法条目（Ruling R3）
+    postgres_password: str = ""  # compose 插值专用；应用不消费，放 .env 不得炸 strict 模式
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -64,9 +67,33 @@ class StrictSettings(Settings):
     model_config = SettingsConfigDict(env_file=".env", extra="forbid")
 
 
+def _detect_env_file_key_typos() -> None:
+    """Dev path guard: a typoed selector key (e.g. APP_ENB) would otherwise
+    silently fall back to dev and disable every fail-closed check (T3.5)."""
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    known = [name.upper() for name in Settings.model_fields]
+    typos: list[tuple[str, str]] = []
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip().upper()
+        if key in known:
+            continue
+        close = difflib.get_close_matches(key, known, n=1, cutoff=0.8)
+        if close:
+            typos.append((key, close[0]))
+    if typos:
+        detail = ", ".join(f"{key}≈{field}" for key, field in typos)
+        raise RuntimeError(f"unknown .env keys look like typos of known settings: {detail}")
+
+
 def build_settings() -> Settings:
     probe = Settings()
     if probe.app_env == "dev":
+        _detect_env_file_key_typos()
         return probe
     return StrictSettings()
 

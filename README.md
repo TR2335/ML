@@ -85,7 +85,7 @@ app/
     index.html       轻量风险工作台（壳页）
     app.js           工作台前端逻辑
 scripts/
-  baselines.py       NEWS2 基线评分
+  baselines.py       NEWS2 与 LACE 基线评分
   build_features.py  landmark 七元组特征构建
   derive_labels.py   标签派生（demo CLI）
   evaluate_model.py  模型评估与三列对比

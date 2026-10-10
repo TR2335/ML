@@ -71,7 +71,7 @@ def test_tree_artifact_scores_match_lightgbm(tmp_path):
 
     from app.config import Settings
     from app.domain import ClinicalEvent
-    from app.risk import RiskEngine
+    from app.risk import RiskEngine, _isotonic_apply
     from scripts.train_model import build_demo_dataset, feature_names_for
 
     path = _train_lgbm(tmp_path)
@@ -80,7 +80,16 @@ def test_tree_artifact_scores_match_lightgbm(tmp_path):
     _times, matrix, _labels = build_demo_dataset("deterioration_24h", 800)
     names = feature_names_for("deterioration_24h")
     x = np.asarray(matrix, dtype=float)
-    raw_pred = booster.predict(x)
+    # serving 分数 = 校准后概率：isotonic 直接输出概率；platt 走 logit 空间
+    # （Ruling R-P7-5 语义；deterioration 默认可能触发 R-P7-5a 的 platt 回退）。
+    calibration = artifact["calibration"]
+    margins = booster.predict(x, raw_score=True)
+    if calibration["method"] == "isotonic":
+        raw_pred = [min(max(_isotonic_apply(calibration, float(m)), 0.0), 1.0) for m in margins]
+    else:
+        raw_pred = [
+            1 / (1 + math.exp(-(calibration["a"] * float(m) + calibration["b"]))) for m in margins
+        ]
     engine = RiskEngine(Settings(model_path=path))
     step = max(1, len(matrix) // 40)
     for i in list(range(0, len(matrix), step))[:40]:

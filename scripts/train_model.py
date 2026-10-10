@@ -373,6 +373,37 @@ def _fit_lightgbm(
     return best, study
 
 
+def _fit_isotonic_block(margins, labels: list[int], fitted_on: str) -> dict:
+    """Isotonic 校准块（Ruling R-P7-5；两算法共用）。
+
+    分辨率退化时回退 Platt（Ruling R-P7-5a）：唯一 y 水平 <3 的 isotonic 会把
+    分数压成二值，直接摧毁阈值阶梯与分带——Platt 保留分级并记 fallback_reason。
+    """
+    from sklearn.isotonic import IsotonicRegression
+
+    margin_array = np.asarray(margins, dtype=float).reshape(-1)
+    label_array = np.asarray(labels, dtype=int)
+    isotonic = IsotonicRegression(out_of_bounds="clip")
+    isotonic.fit(margin_array, label_array)
+    y_scores = [float(v) for v in isotonic.y_thresholds_]
+    if len({round(v, 6) for v in y_scores}) < 3:
+        platt = LogisticRegression()
+        platt.fit(margin_array.reshape(-1, 1), label_array)
+        return {
+            "method": "platt",
+            "a": float(platt.coef_[0][0]),
+            "b": float(platt.intercept_[0]),
+            "fitted_on": fitted_on,
+            "fallback_reason": "isotonic_resolution",
+        }
+    return {
+        "method": "isotonic",
+        "x_thresholds": [float(v) for v in isotonic.X_thresholds_],
+        "y_scores": y_scores,
+        "fitted_on": fitted_on,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/model.json")
@@ -401,6 +432,18 @@ def main() -> None:
     y = np.asarray(labels, dtype=int)
     feature_names = feature_names_for(args.target_id)
     drift_reference = _drift_reference(matrix, feature_names)
+    # 校准段选择（Review I2 链）：60-80% 时间段单类（demo 阳性集中在前半段）时回退
+    # train 段——val 段（80-100%）标签始终不进校准器；再单类才兜底全量。
+    if len(set(y[cal_window])) < 2:
+        if len(set(y[train_idx])) < 2:
+            cal_idx = order
+            fitted_on = "full"
+        else:
+            cal_idx = train_idx
+            fitted_on = "train_segment"
+    else:
+        cal_idx = cal_window
+        fitted_on = "cal_segment"
     if args.algorithm == "lightgbm":
         model, study = _fit_lightgbm(times, matrix, labels, args.target_id, args.trials, args.seed)
         model.fit(x[train_idx], y[train_idx])
@@ -412,8 +455,9 @@ def main() -> None:
             "feature_names": feature_names,
             "feature_order": feature_names,
             "preprocess": None,
-            # T7.3a 起与 logistic 共用 isotonic 回填链（本任务先 None，入台账）。
-            "calibration": None,
+            "calibration": _fit_isotonic_block(
+                booster.predict(x[cal_idx], raw_score=True), y[cal_idx], fitted_on
+            ),
             "bias": 0.0,
             "weights": {name: 0.0 for name in feature_names},
             "trees": _serialize_trees(booster),
@@ -432,27 +476,9 @@ def main() -> None:
     else:
         pipeline, best_c = _fit_pipeline(times, matrix, labels)
         pipeline.fit(x[train_idx], y[train_idx])
-        # 校准段选择（Review I2）：60-80% 时间段单类（demo 阳性集中在前半段）时回退
-        # train 段——val 段（80-100%）标签始终不进校准器；再单类才兜底全量。
-        if len(set(y[cal_window])) < 2:
-            if len(set(y[train_idx])) < 2:
-                cal_idx = order
-                fitted_on = "full"
-            else:
-                cal_idx = train_idx
-                fitted_on = "train_segment"
-        else:
-            cal_idx = cal_window
-            fitted_on = "cal_segment"
-        z_cal = pipeline.decision_function(x[cal_idx]).reshape(-1, 1)
-        platt = LogisticRegression()
-        platt.fit(z_cal, y[cal_idx])
-        calibration_block = {
-            "method": "platt",
-            "a": float(platt.coef_[0][0]),
-            "b": float(platt.intercept_[0]),
-            "fitted_on": fitted_on,
-        }
+        calibration_block = _fit_isotonic_block(
+            pipeline.decision_function(x[cal_idx]), y[cal_idx], fitted_on
+        )
         imputer = pipeline.named_steps["impute"]
         scaler = pipeline.named_steps["scale"]
         clf = pipeline.named_steps["clf"]

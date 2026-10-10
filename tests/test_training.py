@@ -98,7 +98,22 @@ def test_calibration_improves_or_ties_brier(tmp_path):
     path = _train(tmp_path)
     artifact = json.loads(Path(path).read_text(encoding="utf-8"))
     assert artifact["calibration"] is not None
-    assert artifact["calibration"]["method"] == "platt"
+    # Ruling R-P7-5a：deterioration 的 in-sample isotonic 结构性退化（<3 档）→
+    # 回退 Platt；readmission cal 段出样本走真 isotonic（见
+    # test_readmission_uses_isotonic_calibration）。
+    method = artifact["calibration"]["method"]
+    if method == "isotonic":
+        from itertools import pairwise
+
+        xs = artifact["calibration"]["x_thresholds"]
+        ys = artifact["calibration"]["y_scores"]
+        assert len(xs) == len(ys) and len(xs) >= 2
+        assert all(a < b for a, b in pairwise(xs))
+        assert all(a <= b for a, b in pairwise(ys))
+    else:
+        assert method == "platt"
+        assert artifact["calibration"]["fallback_reason"] == "isotonic_resolution"
+    assert artifact["calibration"]["fitted_on"]
 
     _times, matrix, labels = build_demo_dataset("deterioration_24h", 480)
     calibrated = RiskEngine(Settings(model_path=path))
@@ -136,3 +151,67 @@ def test_calibration_fitted_on_train_segment_by_default(tmp_path):
     path = _train(tmp_path)
     artifact = json.loads(Path(path).read_text(encoding="utf-8"))
     assert artifact["calibration"]["fitted_on"] == "train_segment"
+
+
+def test_platt_artifact_still_loads(tmp_path):
+    """旧 Platt 工件兼容（Ruling R-P7-5）：解析与打分路径不变。"""
+    from app.config import Settings
+    from app.domain import ClinicalEvent
+    from app.risk import RiskEngine
+
+    path = _train(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    artifact["calibration"] = {
+        "method": "platt",
+        "a": 1.2,
+        "b": -0.3,
+        "fitted_on": "train_segment",
+    }
+    platt_path = tmp_path / "platt.json"
+    platt_path.write_text(json.dumps(artifact), encoding="utf-8")
+    engine = RiskEngine(Settings(model_path=str(platt_path)))
+    assert engine.calibration["method"] == "platt"
+    score = engine.score(
+        ClinicalEvent(
+            event_type="vital_signs",
+            patient_id="p",
+            encounter_id="e",
+            payload={"age": 70, "heart_rate": 120},
+        )
+    )
+    assert 0.0 <= score.score <= 1.0
+
+
+def test_corrupt_isotonic_block_rejected(tmp_path):
+    import pytest
+
+    from app.config import Settings
+    from app.risk import RiskEngine
+
+    path = _train(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    artifact["calibration"] = {
+        "method": "isotonic",
+        "x_thresholds": [1.0, 0.5],  # 非升序 → 拒绝
+        "y_scores": [0.1, 0.9],
+    }
+    bad = tmp_path / "bad-cal.json"
+    bad.write_text(json.dumps(artifact), encoding="utf-8")
+    with pytest.raises((RuntimeError, ValueError)):
+        RiskEngine(Settings(model_path=str(bad), app_env="test", model_signature_required=False))
+
+
+def test_readmission_uses_isotonic_calibration(tmp_path):
+    """Ruling R-P7-5a：readmission 的 cal 段双类且出样本 → 真 isotonic（WBS T7.3）。"""
+    path = _train(tmp_path, extra=["--target-id", "readmission_30d"])
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    calibration = artifact["calibration"]
+    assert calibration["method"] == "isotonic"
+    xs = calibration["x_thresholds"]
+    ys = calibration["y_scores"]
+    from itertools import pairwise
+
+    assert len(xs) == len(ys) and len({round(v, 6) for v in ys}) >= 3
+    assert all(a < b for a, b in pairwise(xs))
+    assert all(a <= b for a, b in pairwise(ys))
+    assert calibration["fitted_on"] == "cal_segment"

@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import math
+from itertools import pairwise
 from pathlib import Path
 
 from .config import Settings
@@ -71,6 +72,23 @@ def _validated_preprocess(
             raise ValueError("model preprocess block is invalid")
         stats[name] = {"median": median, "mean": mean, "std": std}
     return stats
+
+
+def _isotonic_apply(calibration: dict, z: float) -> float:
+    """分段线性插值（端点 clip），纯 Python（Ruling R-P7-5）。"""
+    xs = calibration["x_thresholds"]
+    ys = calibration["y_scores"]
+    if z <= xs[0]:
+        return ys[0]
+    if z >= xs[-1]:
+        return ys[-1]
+    for index in range(1, len(xs)):
+        if z <= xs[index]:
+            x0, x1 = xs[index - 1], xs[index]
+            y0, y1 = ys[index - 1], ys[index]
+            ratio = (z - x0) / (x1 - x0)
+            return y0 + ratio * (y1 - y0)
+    return ys[-1]
 
 
 class RiskEngine:
@@ -177,16 +195,39 @@ class RiskEngine:
             calibration = artifact.get("calibration")
             candidate_calibration = None
             if calibration is not None:
-                if not isinstance(calibration, dict) or calibration.get("method") != "platt":
+                if not isinstance(calibration, dict):
                     raise ValueError("model calibration block is invalid")
-                try:
-                    cal_a = float(calibration["a"])
-                    cal_b = float(calibration["b"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise ValueError("model calibration block is invalid") from exc
-                if not (math.isfinite(cal_a) and math.isfinite(cal_b)):
+                cal_method = calibration.get("method")
+                if cal_method == "platt":
+                    try:
+                        cal_a = float(calibration["a"])
+                        cal_b = float(calibration["b"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError("model calibration block is invalid") from exc
+                    if not (math.isfinite(cal_a) and math.isfinite(cal_b)):
+                        raise ValueError("model calibration block is invalid")
+                    candidate_calibration = {"method": "platt", "a": cal_a, "b": cal_b}
+                elif cal_method == "isotonic":
+                    try:
+                        cal_xs = [float(v) for v in calibration["x_thresholds"]]
+                        cal_ys = [float(v) for v in calibration["y_scores"]]
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError("model calibration block is invalid") from exc
+                    if (
+                        not cal_xs
+                        or len(cal_xs) != len(cal_ys)
+                        or any(not math.isfinite(v) for v in (*cal_xs, *cal_ys))
+                        or any(a >= b for a, b in pairwise(cal_xs))
+                        or any(a > b for a, b in pairwise(cal_ys))
+                    ):
+                        raise ValueError("model calibration block is invalid")
+                    candidate_calibration = {
+                        "method": "isotonic",
+                        "x_thresholds": cal_xs,
+                        "y_scores": cal_ys,
+                    }
+                else:
                     raise ValueError("model calibration block is invalid")
-                candidate_calibration = {"method": "platt", "a": cal_a, "b": cal_b}
             trees_raw = artifact.get("trees")
             candidate_trees: list | None = None
             if trees_raw is not None:
@@ -287,6 +328,25 @@ class RiskEngine:
     def _sigmoid(value: float) -> float:
         return 1 / (1 + math.exp(-max(min(value, 30), -30)))
 
+    def _calibrated_logit(self, margin: float) -> float:
+        """校准后的 logit（调试/守恒口径）：platt → a*z+b；isotonic → logit(clamp(p))。"""
+        if self.calibration is None:
+            return margin
+        if self.calibration.get("method") == "platt":
+            return self.calibration["a"] * margin + self.calibration["b"]
+        probability = min(max(_isotonic_apply(self.calibration, margin), 1e-6), 1 - 1e-6)
+        return math.log(probability / (1 - probability))
+
+    def _final_score(self, margin: float) -> float:
+        """校准统一应用点（线性与树路径共用，Ruling R-P7-5）。
+
+        platt 在 logit 空间变换后过 sigmoid；isotonic 输出本身是概率，
+        直接作为分数（再过 sigmoid 会把概率压扁到 0.27–0.73，Brier 恶化）。
+        """
+        if self.calibration is not None and self.calibration.get("method") == "isotonic":
+            return round(min(max(_isotonic_apply(self.calibration, margin), 0.0), 1.0), 4)
+        return round(self._sigmoid(self._calibrated_logit(margin)), 4)
+
     def _score(self, event: ClinicalEvent) -> RiskScore:
         payload = event.payload
         feature_order = self.feature_order
@@ -350,9 +410,7 @@ class RiskEngine:
                     contribution = self.weights[feature] * abs(value - 37.0)
                 linear += contribution
                 contributions.append((feature, contribution, value))
-        if self.calibration is not None:
-            linear = self.calibration["a"] * linear + self.calibration["b"]
-        score = round(self._sigmoid(linear), 4)
+        score = self._final_score(linear)
         band = (
             "critical"
             if score >= self.thresholds["critical"]
@@ -445,14 +503,12 @@ class RiskEngine:
                 attributions[feature_order[index]] += delta
                 node = child
             raw_score += float(node["value"])
-        pre_calibration_logit = raw_score + self.bias
-        # 当前解析仅允许 platt；isotonic 分支随 T7.3a 解析扩展同步加入。
-        if self.calibration is not None and self.calibration.get("method") == "platt":
-            raw_score = self.calibration["a"] * raw_score + self.calibration["b"]
-        score = round(self._sigmoid(raw_score + self.bias), 4)
+        margin = raw_score + self.bias
+        pre_calibration_logit = margin
+        score = self._final_score(margin)
         self._last_tree_debug = {
             "pre_logit": pre_calibration_logit,
-            "post_logit": raw_score + self.bias,
+            "post_logit": self._calibrated_logit(margin),
             "attributions": dict(attributions),
             "attribution_sum": sum(attributions.values()) + tree_baseline + self.bias,
         }

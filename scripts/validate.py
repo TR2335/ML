@@ -99,6 +99,87 @@ def bootstrap_metric(
     return point, lo, hi
 
 
+def subgroup_sensitivity_diff(
+    labels: list[int],
+    scores: list[float],
+    groups: list[str],
+    threshold: float,
+    *,
+    min_positives: int = 10,
+) -> float | None:
+    """两组灵敏度之差绝对值；任一组阳性不足或组数<2 → None（跳过，Ruling R-P7-6）。"""
+    by_group: dict[str, tuple[int, int]] = {}
+    for label, score, group in zip(labels, scores, groups):
+        positives, detected = by_group.get(group, (0, 0))
+        if label == 1:
+            positives += 1
+            if score >= threshold:
+                detected += 1
+        by_group[group] = (positives, detected)
+    sensitivities = []
+    for positives, detected in by_group.values():
+        if positives < min_positives:
+            return None
+        sensitivities.append(detected / positives)
+    if len(sensitivities) < 2:
+        return None
+    return abs(sensitivities[0] - sensitivities[1])
+
+
+def per_facility_auprc(
+    rows: list[dict],
+    labels: list[int],
+    scores: list[float],
+    baseline_auprc: float,
+    *,
+    facility_column: str = "facility_id",
+    min_rows: int = 20,
+    min_positives: int = 5,
+) -> dict:
+    """按院区评估（Ruling R-P7-7）：合格院区 AUPRC ≥ baseline 才算过。"""
+    buckets: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        facility = str(row.get(facility_column, "") or "")
+        if not facility:
+            return {"checked": False, "reason": f"missing {facility_column}", "failures": []}
+        buckets.setdefault(facility, []).append(index)
+    if len(buckets) < 2:
+        return {"checked": False, "reason": "fewer than 2 facilities", "failures": []}
+    failures = []
+    worst = None
+    for facility, indices in sorted(buckets.items()):
+        if len(indices) < min_rows:
+            continue
+        facility_labels = [labels[i] for i in indices]
+        if sum(facility_labels) < min_positives:
+            continue
+        auprc = binary_metrics(facility_labels, [scores[i] for i in indices], 0.5)["auprc"] or 0.0
+        worst = auprc if worst is None else min(worst, auprc)
+        if auprc < baseline_auprc:
+            failures.append({"facility": facility, "auprc": auprc, "baseline": baseline_auprc})
+    return {"checked": True, "worst": worst, "failures": failures}
+
+
+def decision_curve_mean_gain(
+    labels: list[int],
+    scores: list[float],
+    grid: list[float] | None = None,
+) -> float:
+    """mean(NB_model − max(NB_treat_all, 0))（Ruling R-P7-8）。"""
+    if not labels or not sum(labels):
+        raise ValueError("decision curve needs labels and at least one positive")
+    thresholds = grid or [round(0.10 + 0.05 * i, 2) for i in range(17)]
+    prevalence = sum(labels) / len(labels)
+    gains = []
+    for threshold in thresholds:
+        tp = sum(1 for score, label in zip(scores, labels) if score >= threshold and label == 1)
+        fp = sum(1 for score, label in zip(scores, labels) if score >= threshold and label == 0)
+        nb_model = tp / len(labels) - (fp / len(labels)) * (threshold / (1 - threshold))
+        nb_all = prevalence - (1 - prevalence) * (threshold / (1 - threshold))
+        gains.append(nb_model - max(nb_all, 0.0))
+    return sum(gains) / len(gains)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rolling temporal validation with bootstrap CI")
     parser.add_argument("--input", type=Path, required=True)

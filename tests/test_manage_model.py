@@ -260,3 +260,97 @@ def test_promote_gate_readmission_accepts_and_records_eval(tmp_path):
     assert report["auprc_ci"]["lo"] >= report["baseline_auprc"]
     assert report["baseline"] == "lace"
     assert (registry / "manifest.json").exists()
+
+
+def test_gate_rejects_subgroup_sensitivity_imbalance(tmp_path):
+    """WBS T7.3 验收：合成亚组失衡数据触发门禁失败（CI/ECE 过、仅 subgroup 拒）。"""
+    import pytest
+
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "imbalance.json"
+    holdout = tmp_path / "subgroup.csv"
+    from app.synthetic import FEATURES
+
+    weights = {feature: 0.0 for feature in FEATURES}
+    weights["creatinine"] = 3.396
+    # bias −4.128：低肌酐 p≈0.081 ≈ bucket0 经验占比（ECE≈0.001，台账 Task 4 Ruling）
+    artifact.write_text(
+        json.dumps(
+            {
+                "model_version": "imb-v1",
+                "target_id": "deterioration_24h",
+                "algorithm": "logistic_regression_sklearn",
+                "feature_names": FEATURES,
+                "weights": weights,
+                "bias": -4.128,
+                "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
+            }
+        ),
+        encoding="utf-8",
+    )
+    header = "creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,age,label"
+    lines = [header]
+    for _ in range(12):  # 老组阳性：高肌酐 → 模型高分命中（sens=1.0）
+        lines.append("3.0,70,16,120,98,36.8,75,1")
+    for _ in range(12):  # 年轻组阳性：低肌酐 → 模型低分漏检（sens=0.0）
+        lines.append("0.5,70,16,120,98,36.8,40,1")
+    for _ in range(136):  # 阴性（与年轻组阳性同特征 → 同分桶）
+        lines.append("0.5,70,16,120,98,36.8,40,0")
+    holdout.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            manage_main()
+    finally:
+        sys.argv = old_argv
+    assert "subgroup" in str(excinfo.value)
+    assert not (registry / "manifest.json").exists()
+
+
+def test_gate_rules_degrade_when_columns_absent(tmp_path):
+    """既有 fixture 无 age/facility 列 → 亚组/院区规则跳过，门禁语义不变（Ruling R-P7-6）。"""
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "good.json"
+    holdout = tmp_path / "holdout.csv"
+    _write_gate_artifact(artifact, "deg-v1")
+    _write_gate_rows(holdout, invert_labels=False)
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        manage_main()
+    finally:
+        sys.argv = old_argv
+    report = json.loads(
+        (registry / "deterioration_24h" / "deg-v1" / "eval.json").read_text(encoding="utf-8")
+    )
+    assert report["passed"] is True
+    assert report["rules"]["subgroup"]["status"] == "skipped"
+    assert report["rules"]["facility"]["status"] == "skipped"
+    assert report["rules"]["decision_curve"]["status"] in ("pass", "skipped")

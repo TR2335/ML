@@ -28,7 +28,12 @@ from app.risk import RiskEngine
 from app.synthetic import FEATURES
 from scripts.baselines import news2_score
 from scripts.evaluate_model import binary_metrics, evaluate_rows
-from scripts.validate import bootstrap_metric
+from scripts.validate import (
+    bootstrap_metric,
+    decision_curve_mean_gain,
+    per_facility_auprc,
+    subgroup_sensitivity_diff,
+)
 
 TARGETS = {"deterioration_24h", "readmission_30d"}
 VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -134,23 +139,55 @@ def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> 
             raise SystemExit(f"promotion gate rejected: {exc}") from exc
     baseline_auprc = binary_metrics(labels, baseline_scores, 7 / 15)["auprc"] or 0.0
     ece = binary_metrics(labels, scores, engine.thresholds["high"])["ece"]
+    # 三条新规则按数据可用性降级（Ruling R-P7-6）：前置不足 → skipped 不判失败。
+    rules: dict[str, dict] = {}
+    try:
+        gain = decision_curve_mean_gain(labels, scores)
+        rules["decision_curve"] = {"status": "pass" if gain >= 0 else "fail", "mean_gain": gain}
+    except ValueError as exc:
+        rules["decision_curve"] = {"status": "skipped", "reason": str(exc)}
+    ages = [row.get("age", "") for row in rows]
+    if all(age not in ("", None) for age in ages):
+        groups = ["older" if float(age) >= 65 else "younger" for age in ages]
+        diff = subgroup_sensitivity_diff(
+            labels, scores, groups, engine.thresholds["high"], min_positives=10
+        )
+        rules["subgroup"] = (
+            {"status": "skipped", "reason": "insufficient positives per group"}
+            if diff is None
+            else {"status": "pass" if diff <= 0.10 else "fail", "sensitivity_diff": diff}
+        )
+    else:
+        rules["subgroup"] = {"status": "skipped", "reason": "age column absent"}
+    facility = per_facility_auprc(rows, labels, scores, baseline_auprc)
+    facility["status"] = (
+        "skipped" if not facility["checked"] else ("fail" if facility["failures"] else "pass")
+    )
+    rules["facility"] = facility
+    failing_rules = [name for name, rule in rules.items() if rule.get("status") == "fail"]
     report = {
-        "passed": bool(lo >= baseline_auprc and ece is not None and ece < 0.05),
+        "passed": bool(
+            lo >= baseline_auprc and ece is not None and ece < 0.05 and not failing_rules
+        ),
         "auprc_ci": {"point": point, "lo": lo, "hi": hi, "n": 1000, "seed": 20260928},
         "baseline": baseline_name,
         "baseline_auprc": baseline_auprc,
         "ece": ece,
+        "rules": rules,
         "gate": {
-            "rule": f"auprc_ci.lo >= baseline_auprc({baseline_name}) and ece < 0.05",
+            "rule": (
+                f"auprc_ci.lo >= baseline_auprc({baseline_name}) and ece < 0.05 and no rule fails"
+            ),
             "max_ece": 0.05,
         },
     }
     if not report["passed"]:
+        rules_suffix = f"; failing rules: {', '.join(failing_rules)}" if failing_rules else ""
         print(json.dumps(report, ensure_ascii=False, indent=2))
         raise SystemExit(
             f"promotion gate rejected: auprc CI lo {lo:.4f} vs {baseline_name} "
             f"{baseline_auprc:.4f}; ece {None if ece is None else round(ece, 4)} "
-            "(need < 0.05)"
+            f"(need < 0.05){rules_suffix}"
         )
     return report
 

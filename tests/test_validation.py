@@ -77,3 +77,53 @@ def test_rolling_time_split_keeps_duplicate_timestamps_on_one_side():
         test_min = min(row["index_time"] for row in test)
         # 同刻行必须整体落同一侧：train 严格早于 test（不允许 TIE）
         assert train_max < test_min, f"边界 TIE: train_max={train_max} test_min={test_min}"
+
+
+def test_subgroup_sensitivity_diff_flags_imbalance():
+    from scripts.validate import subgroup_sensitivity_diff
+
+    # 老组 10 阳性全检出（sens=1.0）；年轻组 10 阳性只检出 2（sens=0.2）→ 差 0.8
+    labels = [1] * 20
+    scores = [0.9] * 10 + [0.9, 0.9] + [0.1] * 8
+    groups = ["older"] * 10 + ["younger"] * 10
+    diff = subgroup_sensitivity_diff(labels, scores, groups, threshold=0.5, min_positives=10)
+    assert diff is not None and abs(diff - 0.8) < 1e-9
+    # 前置不足 → None（降级跳过）
+    assert (
+        subgroup_sensitivity_diff([1] * 5, [0.9] * 5, ["older"] * 5, 0.5, min_positives=10) is None
+    )
+    assert (
+        subgroup_sensitivity_diff([1] * 20, [0.9] * 20, ["same"] * 20, 0.5, min_positives=10)
+        is None  # 单组无从比较
+    )
+
+
+def test_decision_curve_mean_gain_both_sides():
+    from scripts.validate import decision_curve_mean_gain
+
+    labels = [1, 1, 0, 0]
+    perfect = [0.9, 0.8, 0.2, 0.1]
+    inverted = [0.1, 0.2, 0.8, 0.9]
+    assert decision_curve_mean_gain(labels, perfect) > 0
+    assert decision_curve_mean_gain(labels, inverted) < 0
+
+
+def test_per_facility_auprc_requires_two_facilities():
+    from scripts.validate import per_facility_auprc
+
+    rows = [{"facility_id": "h1"}] * 30
+    labels = [1] * 10 + [0] * 20
+    scores = [0.9] * 10 + [0.1] * 20
+    single = per_facility_auprc(rows, labels, scores, baseline_auprc=0.3)
+    assert single["checked"] is False
+    rows2 = [{"facility_id": "h1" if i < 30 else "h2"} for i in range(60)]
+    labels2 = labels + labels
+    both = per_facility_auprc(rows2, labels2, scores + scores, baseline_auprc=0.3)
+    assert both["checked"] is True and not both["failures"]
+    # h2 反向排序：10 阳性压到 20 阴性之后 → AUPRC≈0.21 < 基线 0.3 → 拒
+    inverted2 = scores + [0.05] * 10 + [0.9] * 20
+    bad = per_facility_auprc(rows2, labels2, inverted2, baseline_auprc=0.3)
+    assert bad["checked"] is True and bad["failures"]
+    # 缺 facility 列 → 降级跳过
+    missing = per_facility_auprc([{}] * 60, labels2, scores + scores, baseline_auprc=0.3)
+    assert missing["checked"] is False

@@ -25,7 +25,7 @@
 | 生产数据库 | 已具备适配器 | `PostgresStore`、复合租户键、JSONB、连接池和启动建表；仍需医院托管 PostgreSQL 的备份、灾备和迁移审批 |
 | 临床目标拆分 | 已覆盖（平台层） | 两个 `target_id`、独立模型工件、阈值、分数、复核状态和模型卡；临床标签仍需医院确认 |
 | 真实模型验证 | 已具备验证工具 | `scripts/evaluate_model.py` 支持时间切分、AUROC/AUPRC/Brier、灵敏度/特异度和亚组报告；真实数据和临床阈值仍需提供 |
-| 模型注册与发布 | 已具备文件注册工作流 | `scripts/manage_model.py` 支持 promote、SHA-256 manifest 和 rollback；生产仍需受控 Registry、审批、灰度和发布审计 |
+| 模型注册与发布 | 已具备文件注册工作流 | `scripts/manage_model.py` 支持 promote、SHA-256 manifest 和 rollback；promote 门禁 = bootstrap CI 下界 ≥ 基线（deterioration→NEWS2、readmission→LACE）+ ECE<0.05 + 亚组灵敏度差 ≤10%（age 可用时）+ 逐院区 AUPRC ≥ 基线（≥2 院区时）+ 决策曲线平均增益 ≥0，不可用规则跳过并在 eval.json 的 `rules` 注明；生产仍需受控 Registry、审批、灰度和发布审计 |
 | 可观测性 | 已具备基础指标 | `/api/metrics` 提供事件、评分、重复、队列、复核和错误计数；生产仍需 Prometheus 抓取、延迟/缺失率/漂移/校准告警、SLO 和告警系统 |
 | 医疗合规 | 未覆盖（外部必需） | 需院内数据治理、脱敏、血缘、等保/安全控制映射、风险管理和合规评估 |
 

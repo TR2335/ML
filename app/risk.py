@@ -380,6 +380,17 @@ class RiskEngine:
             as_of=event.occurred_at,
         )
 
+    def tree_debug(self, event: ClinicalEvent) -> dict:
+        """Walk the trees and return conservation debug fields (test hook, WBS T7.2).
+
+        返回 `{"pre_logit", "post_logit", "attributions", "attribution_sum"}`：
+        `attribution_sum` = 路径归因和 + 树基线 + bias（校准前），应与 `pre_logit`
+        严格相等（1e-6）；`post_logit` 为校准后未舍入 logit。
+        """
+        self._score_tree(event)
+        assert self._last_tree_debug is not None
+        return dict(self._last_tree_debug)
+
     def _score_tree(self, event: ClinicalEvent) -> RiskScore:
         """Pure-python walk over serialized trees（WBS T7.1/T7.2；Ruling R-P7-3）。
 

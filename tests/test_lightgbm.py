@@ -134,3 +134,47 @@ def test_monotone_constraint_holds_on_spo2_ramp(tmp_path):
     from itertools import pairwise
 
     assert all(a >= b - 1e-9 for a, b in pairwise(scores)), scores
+
+
+def test_tree_path_contributions_sum_to_logit(tmp_path):
+    """归因守恒：完整路径归因和+树基线+bias == 校准前 logit（严格 1e-6，WBS T7.2）。"""
+    import math
+
+    from app.config import Settings
+    from app.domain import ClinicalEvent
+    from app.risk import RiskEngine
+
+    path = _train_lgbm(tmp_path)
+    engine = RiskEngine(Settings(model_path=path))
+    event = ClinicalEvent(
+        event_type="vital_signs",
+        patient_id="attr",
+        encounter_id="attr-1",
+        payload={"age": 74, "heart_rate": 125, "creatinine": 2.8, "lactate": 3.1},
+    )
+    score = engine.score(event)
+    assert 0.0 < score.score < 1.0
+    debug = engine.tree_debug(event)
+    # 归因守恒（未舍入口径，严格 1e-6）
+    assert abs(debug["attribution_sum"] - debug["pre_logit"]) < 1e-6
+    # 校准后 logit 与 serving 4 位舍入分数一致（舍入契约 2e-4）
+    assert abs(1 / (1 + math.exp(-debug["post_logit"])) - score.score) < 2e-4
+    # 归因确实有信号：top_factors 非空且带中文/原名标签
+    assert score.top_factors
+    assert all(factor.feature for factor in score.top_factors)
+
+
+def test_tree_engine_rejects_corrupt_trees_block(tmp_path):
+    """坏 trees 块响亮拒绝，不静默回落打分（Review 口径）。"""
+    import pytest
+
+    from app.config import Settings
+    from app.risk import RiskEngine
+
+    path = _train_lgbm(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    artifact["trees"] = [{"nodes": [{"bogus": 1}]}]
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(artifact), encoding="utf-8")
+    with pytest.raises((RuntimeError, ValueError)):
+        RiskEngine(Settings(model_path=str(bad), app_env="test", model_signature_required=False))

@@ -106,6 +106,7 @@ class RiskEngine:
         self.calibration: dict | None = None
         self.trees: list | None = None
         self._last_tree_debug: dict | None = None
+        self._last_linear_margin: float = 0.0
         self.degraded = False
         self.degraded_reason: str | None = None
         self._model_path = model_path = (
@@ -410,6 +411,7 @@ class RiskEngine:
                     contribution = self.weights[feature] * abs(value - 37.0)
                 linear += contribution
                 contributions.append((feature, contribution, value))
+        self._last_linear_margin = linear  # 校准前 logit（recalibrate 钩子，T7.4）
         score = self._final_score(linear)
         band = (
             "critical"
@@ -437,6 +439,21 @@ class RiskEngine:
             missing_features=missing_features,
             as_of=event.occurred_at,
         )
+
+    def linear_margin(self, event: ClinicalEvent) -> float:
+        """Calibration-free logit of the linear path (recalibration hook, WBS T7.4)."""
+        if self.algorithm == "lightgbm" and self.trees:
+            raise ValueError("linear_margin is only valid for linear artifacts")
+        self._score(event)
+        return self._last_linear_margin
+
+    def tree_raw_margin(self, event: ClinicalEvent) -> float:
+        """Calibration-free accumulated leaf score for tree artifacts (WBS T7.4)."""
+        if not (self.algorithm == "lightgbm" and self.trees):
+            raise ValueError("tree_raw_margin requires a lightgbm artifact")
+        self._score_tree(event)
+        assert self._last_tree_debug is not None
+        return self._last_tree_debug["pre_logit"]
 
     def tree_debug(self, event: ClinicalEvent) -> dict:
         """Walk the trees and return conservation debug fields (test hook, WBS T7.2).

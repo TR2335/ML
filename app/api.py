@@ -79,6 +79,24 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
     def metrics_endpoint() -> str:
         if not settings.metrics_enabled:
             raise HTTPException(status_code=404, detail="metrics_disabled")
+        # 近期分数的 band 占比与缺失率 gauge（WBS T7.4；SQLite-first 见台账）。
+        recent = store.recent_scores(limit=500)
+        if recent:
+            band_counts: dict[str, int] = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+            missing_total = 0
+            for score in recent:
+                band_counts[score.band] = band_counts.get(score.band, 0) + 1
+                missing_total += len(score.missing_features)
+            metrics.set_share(
+                "medintel_band_share",
+                {band: count / len(recent) for band, count in band_counts.items()},
+                label="band",
+            )
+            metrics.set_share(
+                "medintel_missing_rate",
+                {"per_score": missing_total / len(recent)},
+                label="scope",
+            )
         return metrics.render()
 
     @router.get("/model-card")

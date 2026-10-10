@@ -28,5 +28,12 @@
 1. 以患者主索引、就诊主索引和数据血缘替换演示存储。
 2. 为每个院区增加 `tenant_id`、数据域权限和脱敏策略。
 3. 使用时间切分和外部医院验证集管理模型晋级；模型卡与审批记录绑定版本。
-4. 加入漂移、延迟、缺失率、校准度、告警负荷和处置闭环监控。
+4. 加入漂移、延迟、缺失率、校准度、告警负荷和处置闭环监控（P7 已落地 PSI/占比指标与再校准，见下节）。
 5. 通过灰度院区上线；模型不可用时默认 fail-closed，由人工/规则流程接管。只有完成验证和审批后，才可启用显式的降级策略。
+
+## 漂移监控与再校准（P7）
+
+- **参考分布随工件**：训练时每个特征的 `drift_reference`（lo/hi + 10 等宽箱占比 + 缺失率）写入工件；再训练即刷新。
+- **批量漂移检查**：`python scripts/monitor_drift.py --artifact <工件> --input <批次CSV>` 逐特征算 PSI（0.005 平滑、缺失率差并入），任一 PSI > 0.2 → 报告 `alert: true` 并 `exit 1`，对接方按退出码接告警系统（生产建议按月随再校准一起跑）。
+- **月度再校准**：`python scripts/recalibrate.py --artifact <工件> --input <标注CSV> --target-id <目标> [--gate-input <独立留出集>]` 只重拟合 `calibration` 块；门禁（CI 下界 ≥ 基线 + ECE + 三条规则）在临时候选工件上先跑，不过则原工件分毫不动、`exit 1`。同输入校准+门禁存在 in-sample 乐观性，真实数据务必提供独立 `--gate-input`。
+- **在线指标**：`GET /api/metrics` 暴露近期分数（≤500 条）的 `medintel_band_share{band=...}` 与 `medintel_missing_rate{scope=...}` gauge（当前 SQLite 聚合，Postgres 适配器待补）。

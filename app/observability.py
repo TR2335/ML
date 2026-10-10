@@ -11,6 +11,7 @@ class Metrics:
         self.counters: Counter[str] = Counter()
         self.latency_sum: Counter[str] = Counter()
         self.latency_count: Counter[str] = Counter()
+        self._shares: dict[str, dict] = {}  # family -> {"label": 名, "values": {k: 比值}}
 
     def inc(self, name: str, amount: int = 1, *, labels: dict[str, str] | None = None) -> None:
         key = name
@@ -24,6 +25,11 @@ class Metrics:
         with self._lock:
             self.latency_sum[name] += seconds
             self.latency_count[name] += 1
+
+    def set_share(self, family: str, shares: dict[str, float], *, label: str = "feature") -> None:
+        """记录占比类指标快照（band share / missing rate；每次 scrape 覆盖，WBS T7.4）。"""
+        with self._lock:
+            self._shares[family] = {"label": label, "values": dict(shares)}
 
     def timer(self, name: str):
         started = monotonic()
@@ -52,6 +58,14 @@ class Metrics:
                 lines.append(f"# TYPE {name} summary")
                 lines.append(f"{name}_sum {value:.6f}")
                 lines.append(f"{name}_count {self.latency_count[name]}")
+            for family in sorted(self._shares):
+                label = self._shares[family]["label"]
+                values = self._shares[family]["values"]
+                if not values:
+                    continue
+                lines.append(f"# TYPE {family} gauge")
+                for key, value in sorted(values.items()):
+                    lines.append(f'{family}{{{label}="{key}"}} {value:.6f}')
         return "\n".join(lines) + ("\n" if lines else "")
 
 

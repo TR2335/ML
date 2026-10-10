@@ -420,6 +420,10 @@ class PostgresStore:
             row = connection.execute(query, params).fetchone()
         return RiskScore.model_validate(row["data_json"]) if row else None
 
+    def recent_scores(self, limit: int = 500) -> list[RiskScore]:
+        # P7 drift gauges are SQLite-first（台账 Task 5）；Postgres 聚合待补。
+        return []
+
     def get_scores(
         self, encounter_id: str, tenant_id: str, facility_id: str | None = None
     ) -> dict[str, RiskScore]:

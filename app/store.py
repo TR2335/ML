@@ -550,6 +550,14 @@ class Store:
             row = self.connection.execute(query, params).fetchone()
         return RiskScore.model_validate(self._loads(row["data_json"])) if row else None
 
+    def recent_scores(self, limit: int = 500) -> list[RiskScore]:
+        """最近写入的分数（rowid 近似时间序）——P7 漂移 gauge 聚合用（WBS T7.4）。"""
+        with self._lock:
+            rows = self.connection.execute(
+                "SELECT data_json FROM scores ORDER BY rowid DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [RiskScore.model_validate(self._loads(row["data_json"])) for row in rows]
+
     def get_scores(
         self, encounter_id: str, tenant_id: str, facility_id: str | None = None
     ) -> dict[str, RiskScore]:

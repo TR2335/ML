@@ -24,6 +24,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from app.domain import ClinicalEvent
+from app.features import READMISSION_FEATURES, encode_readmission_payload
 from app.synthetic import FEATURES, demo_patients_with_outcomes
 from scripts.baselines import news2_score
 from scripts.derive_labels import _latest_payload_before, demo_index_times, derive_labels
@@ -41,6 +42,12 @@ TARGET_THRESHOLDS = {
 }
 READMISSION_DISCHARGE_HOURS = 72
 READMISSION_POSITIVE_RATE = 0.08
+
+
+def feature_names_for(target_id: str) -> list[str]:
+    if target_id == "deterioration_24h":
+        return list(FEATURES_V2)
+    return list(READMISSION_FEATURES)
 
 
 def _features_before(payload: dict) -> list[float]:
@@ -80,15 +87,48 @@ def build_demo_dataset(
             for encounter_id, at in first_seen.items()
         ]
         rng = Random(42)
-        readmissions = [
-            {
-                "encounter_id": encounter_id,
-                "occurred_at": (at + timedelta(days=2 + rng.randrange(27))).isoformat(),
-                "outcome_type": "unplanned_readmission",
+        readmissions = []
+        raw_by_encounter: dict[str, dict] = {}
+        for encounter_id, at in first_seen.items():
+            ordinal = int(encounter_id.split("-")[1])
+            field_rng = Random(7000 + ordinal)
+            los_days = round(0.5 + min(field_rng.expovariate(0.45), 40.0), 1)
+            comorbidity = round(min(14.0, field_rng.expovariate(0.5)), 1)
+            prior_util = min(6, int(field_rng.expovariate(0.8)))
+            ed_visits = min(8, int(field_rng.expovariate(1.0)))
+            destination = field_rng.choices(
+                ["home", "home_health", "snf", "other"], weights=[55, 20, 15, 10]
+            )[0]
+            code_count = int(comorbidity) + field_rng.randrange(3)
+            discharge_payload = {
+                "los_days": los_days,
+                "prior_utilization_12m": prior_util,
+                "comorbidity_index": comorbidity,
+                "ed_visits_6m": ed_visits,
+                "diagnosis_codes": [f"D{i:02d}" for i in range(code_count)],
+                "discharge_destination": destination,
             }
-            for encounter_id, at in first_seen.items()
-            if rng.random() < READMISSION_POSITIVE_RATE
-        ]
+            encoded = encode_readmission_payload(discharge_payload)
+            # 字段驱动标签（Ruling R-P8-8）：否则逻辑回归学不到信号、无法打赢 LACE。
+            latent = (
+                -4.6
+                + 0.10 * encoded[0]
+                + 0.38 * encoded[1]
+                + 0.26 * encoded[2]
+                + 0.22 * encoded[3]
+                + 0.30 * encoded[4]
+                + (0.0 if destination == "home" else 0.45)
+            )
+            probability = 1 / (1 + math.exp(-latent))
+            if rng.random() < probability:
+                readmissions.append(
+                    {
+                        "encounter_id": encounter_id,
+                        "occurred_at": (at + timedelta(days=2 + rng.randrange(27))).isoformat(),
+                        "outcome_type": "unplanned_readmission",
+                    }
+                )
+            raw_by_encounter[encounter_id] = discharge_payload
         labeled = derive_labels(events, readmissions, index_times, horizon_hours=720)
     events_by_encounter: dict[str, list[ClinicalEvent]] = {}
     for event in events:
@@ -97,11 +137,16 @@ def build_demo_dataset(
     matrix: list[list[float]] = []
     labels: list[int] = []
     for item in labeled:
-        payload = _latest_payload_before(
-            events_by_encounter.get(item.encounter_id, []), item.encounter_id, item.index_time
-        )
-        rows.append({"index_time": item.index_time.isoformat()})
-        matrix.append(_features_before(payload))
+        if target_id == "deterioration_24h":
+            payload = _latest_payload_before(
+                events_by_encounter.get(item.encounter_id, []), item.encounter_id, item.index_time
+            )
+            rows.append({"index_time": item.index_time.isoformat()})
+            matrix.append(_features_before(payload))
+        else:
+            raw = raw_by_encounter[item.encounter_id]
+            rows.append({"index_time": item.index_time.isoformat(), **raw})
+            matrix.append(encode_readmission_payload(raw))
         labels.append(item.label)
     return rows, matrix, labels
 
@@ -205,23 +250,24 @@ def main() -> None:
     imputer = pipeline.named_steps["impute"]
     scaler = pipeline.named_steps["scale"]
     clf = pipeline.named_steps["clf"]
+    feature_names = feature_names_for(args.target_id)
     artifact = {
         "model_version": args.version,
         "target_id": args.target_id,
         "algorithm": "logistic_regression_sklearn",
-        "feature_names": FEATURES_V2,
-        "feature_order": FEATURES_V2,
+        "feature_names": feature_names,
+        "feature_order": feature_names,
         "preprocess": {
             name: {
                 "median": float(imputer.statistics_[i]),
                 "mean": float(scaler.mean_[i]),
                 "std": float(scaler.scale_[i]) or 1.0,
             }
-            for i, name in enumerate(FEATURES_V2)
+            for i, name in enumerate(feature_names)
         },
         "calibration": calibration_block,
         "bias": float(clf.intercept_[0]),
-        "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(FEATURES_V2)},
+        "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(feature_names)},
         "training_rows": len(y),
         "best_C": best_c,
         "label_definition": f"synthetic_{args.target_id}",

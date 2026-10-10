@@ -9,6 +9,7 @@ group columns support temporal holdout and subgroup reporting.
 import argparse
 import csv
 import json
+import math
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -93,6 +94,45 @@ def binary_metrics(
     }
 
 
+META_COLUMNS = {
+    "label",
+    "patient_id",
+    "encounter_id",
+    "occurred_at",
+    "index_time",
+    "offline_score",
+    "serving_score",
+    "score",
+    "uncertainty",
+}
+
+
+def payload_from_row(row) -> dict:
+    """CSV/映射行 → 临床事件 payload（双目标共享，Ruling R-P8-7）。"""
+    payload: dict = {}
+    for key, raw in row.items():
+        if key in META_COLUMNS or raw in ("", None):
+            continue
+        if key == "diagnosis_codes":
+            if isinstance(raw, str) and raw.strip().startswith("["):
+                try:
+                    payload[key] = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+            else:
+                payload[key] = raw
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            payload[key] = str(raw)
+            continue
+        if math.isnan(value):
+            continue
+        payload[key] = value
+    return payload
+
+
 def evaluate_rows(
     rows: Iterable[dict[str, str]], engine: RiskEngine, label_column: str
 ) -> tuple[list[int], list[float]]:
@@ -105,11 +145,7 @@ def evaluate_rows(
             raise ValueError(f"row {index}: {label_column} must be 0 or 1") from exc
         if label not in (0, 1):
             raise ValueError(f"row {index}: {label_column} must be 0 or 1")
-        payload = {
-            feature: float(row[feature]) for feature in FEATURES if row.get(feature, "") != ""
-        }
-        if row.get("news2_score", "") not in ("", None):
-            payload["news2_score"] = float(row["news2_score"])
+        payload = payload_from_row(row)
         event = ClinicalEvent(
             event_type="vital_signs",
             patient_id=row.get("patient_id", f"validation-patient-{index}"),

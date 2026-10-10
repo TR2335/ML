@@ -8,6 +8,7 @@ from pathlib import Path
 from .config import Settings
 from .degrade import fallback_score
 from .domain import ClinicalEvent, RiskFactor, RiskScore, TargetId
+from .features import READMISSION_FEATURES, encode_readmission_payload
 from .synthetic import FEATURES
 
 DEFAULT_WEIGHTS = {
@@ -260,30 +261,41 @@ class RiskEngine:
     def _score(self, event: ClinicalEvent) -> RiskScore:
         payload = event.payload
         feature_order = self.feature_order
-        # 指示列（X__missing）永不计入 missing_features（Plan Ruling R2）。
-        missing_features = [
-            feature
-            for feature in feature_order
-            if payload.get(feature) is None
-            and not (feature.endswith("__missing") and feature[: -len("__missing")] in FEATURES)
-        ]
+        # 统一解析：派生特征（再入院编码）→ 即时计算；__missing 指示列 → 0/1；
+        # 其余 → payload 直取（缺失时 median 填补并计入 missing_features）。
+        readmission_lookup = (
+            dict(zip(READMISSION_FEATURES, encode_readmission_payload(payload)))
+            if any(name in feature_order for name in READMISSION_FEATURES)
+            else None
+        )
+        missing_features: list[str] = []
+        for feature in feature_order:
+            if readmission_lookup is not None and feature in readmission_lookup:
+                if math.isnan(readmission_lookup[feature]):
+                    missing_features.append(feature)
+                continue
+            if feature.endswith("__missing") and feature[: -len("__missing")] in FEATURES:
+                # 指示列永不计入 missing_features（Plan Ruling R2）。
+                continue
+            if payload.get(feature) is None:
+                missing_features.append(feature)
         contributions: list[tuple[str, float, float | None]] = []
         linear = self.bias
         if self.preprocess is not None:
             for name in feature_order:
                 stats = self.preprocess[name]
-                raw = payload.get(name)
-                base_name = name[: -len("__missing")] if name.endswith("__missing") else None
-                if base_name is not None and base_name in FEATURES:
-                    # 指示列由 serving 即时计算（Plan Ruling R2）：基特征缺失 → 1.0。
-                    value = 0.0 if payload.get(base_name) is not None else 1.0
-                    std = stats["std"] if stats["std"] > 0 else 1.0
-                    contribution = self.weights.get(name, 0.0) * (value - stats["mean"]) / std
-                    linear += contribution
-                    contributions.append((name, contribution, value))
-                    continue
-                # Plan Ruling R10: imputed features still count as missing.
-                value = stats["median"] if raw is None else float(raw)
+                if readmission_lookup is not None and name in readmission_lookup:
+                    raw_value = readmission_lookup[name]
+                    value = stats["median"] if math.isnan(raw_value) else raw_value
+                else:
+                    base_name = name[: -len("__missing")] if name.endswith("__missing") else None
+                    if base_name is not None and base_name in FEATURES:
+                        # 指示列由 serving 即时计算（Plan Ruling R2）：基特征缺失 → 1.0。
+                        value = 0.0 if payload.get(base_name) is not None else 1.0
+                    else:
+                        raw = payload.get(name)
+                        # Plan Ruling R10: imputed features still count as missing.
+                        value = stats["median"] if raw is None else float(raw)
                 std = stats["std"] if stats["std"] > 0 else 1.0
                 contribution = self.weights.get(name, 0.0) * (value - stats["mean"]) / std
                 linear += contribution

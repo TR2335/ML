@@ -16,17 +16,11 @@ def _load_fixture(target_id: str):
     return rows, artifact
 
 
-def _payload_from_row(row: dict) -> dict[str, float]:
-    from app.synthetic import FEATURES
+def _payload_from_row(row: dict) -> dict:
+    # 双目标共享的行→payload 转换（Ruling R-P8-7）。
+    from scripts.evaluate_model import payload_from_row
 
-    payload = {
-        feature: float(row[feature])
-        for feature in FEATURES
-        if row.get(feature, "") not in ("", None)
-    }
-    if row.get("news2_score", "") not in ("", None):
-        payload["news2_score"] = float(row["news2_score"])
-    return payload
+    return payload_from_row(row)
 
 
 @pytest.mark.parametrize("target_id", TARGETS)

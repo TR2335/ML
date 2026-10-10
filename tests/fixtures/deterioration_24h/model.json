@@ -1,5 +1,5 @@
 {
-  "model_version": "p6-golden-v1",
+  "model_version": "p8-golden-v1",
   "target_id": "deterioration_24h",
   "algorithm": "logistic_regression_sklearn",
   "feature_names": [

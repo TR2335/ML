@@ -16,18 +16,13 @@ if __package__ in (None, ""):
 from app.config import Settings
 from app.domain import ClinicalEvent
 from app.risk import RiskEngine
-from app.synthetic import FEATURES
 
 
-def _payload(row: dict) -> dict[str, float]:
-    payload: dict[str, float] = {}
-    for feature in FEATURES:
-        raw = row.get(feature, "")
-        if raw not in ("", None):
-            payload[feature] = float(raw)
-    if row.get("news2_score", "") not in ("", None):
-        payload["news2_score"] = float(row["news2_score"])
-    return payload
+def _payload(row: dict) -> dict:
+    # 双目标共享的行→payload 转换（Ruling R-P8-7）。
+    from scripts.evaluate_model import payload_from_row
+
+    return payload_from_row(row)
 
 
 def select_for_labeling(rows: list[dict], engine: RiskEngine, top_n: int) -> list[dict]:

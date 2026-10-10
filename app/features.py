@@ -5,6 +5,9 @@ the contract both the offline pipeline and future trainers consume; serving
 keeps raw-feature scoring until artifacts carry their own feature_order.
 """
 
+import json
+import math
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 from app.domain import ClinicalEvent
@@ -95,3 +98,57 @@ def _least_squares_slope(samples: list[tuple[datetime, float]]) -> float | None:
         return None
     cov = sum((t - mean_t) * (v - mean_v) for t, v in points)
     return round(cov / denom, 6)
+
+
+READMISSION_PAYLOAD_KEYS = (
+    "los_days",
+    "prior_utilization_12m",
+    "comorbidity_index",
+    "ed_visits_6m",
+    "diagnosis_codes",
+    "discharge_destination",
+)
+READMISSION_FEATURES = [
+    "los_days",
+    "prior_utilization_12m",
+    "comorbidity_index",
+    "ed_visits_6m",
+    "diagnosis_code_count",
+    "discharge_destination_code",
+]
+DISCHARGE_DESTINATION_CODES = {"home": 0.0, "home_health": 1.0, "snf": 2.0, "other": 3.0}
+
+
+def encode_readmission_payload(payload: Mapping) -> list[float]:
+    """出院快照 → 6 维再入院特征（训练/serving 唯一编码源，Ruling R-P8-3）。
+
+    源字段缺失填 NaN（与 P6 中位数填补语义一致）。
+    """
+
+    def _number(name: str) -> float:
+        raw = payload.get(name)
+        if raw in ("", None):
+            return math.nan
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return math.nan
+        return value if math.isfinite(value) else math.nan
+
+    codes = payload.get("diagnosis_codes")
+    if isinstance(codes, str) and codes.strip():
+        try:
+            codes = json.loads(codes)
+        except json.JSONDecodeError:
+            codes = None
+    count = float(len(codes)) if isinstance(codes, list) else math.nan
+    destination = payload.get("discharge_destination")
+    destination_code = DISCHARGE_DESTINATION_CODES.get(str(destination), math.nan)
+    return [
+        _number("los_days"),
+        _number("prior_utilization_12m"),
+        _number("comorbidity_index"),
+        _number("ed_visits_6m"),
+        count,
+        destination_code,
+    ]

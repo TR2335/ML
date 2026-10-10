@@ -67,3 +67,55 @@ def test_feature_order_includes_news2_score():
 
     assert FEATURE_ORDER[-1] == "news2_score"
     assert len(FEATURE_ORDER) == 71
+
+
+def test_encode_readmission_payload_maps_fields_and_handles_missing():
+    import math
+
+    from app.features import READMISSION_FEATURES, encode_readmission_payload
+
+    encoded = encode_readmission_payload(
+        {
+            "los_days": 5.0,
+            "prior_utilization_12m": 2,
+            "comorbidity_index": 3.0,
+            "ed_visits_6m": 1,
+            "diagnosis_codes": ["I50.9", "N17.9"],
+            "discharge_destination": "snf",
+        }
+    )
+    assert len(encoded) == len(READMISSION_FEATURES) == 6
+    assert encoded == [5.0, 2.0, 3.0, 1.0, 2.0, 2.0]
+    partial = encode_readmission_payload({"discharge_destination": "home"})
+    assert all(math.isnan(value) for value in partial[:5])  # NaN≠NaN，不能直接比列表
+    assert partial[5] == 0.0
+    # JSON 字符串形式的诊断列表（CSV 路径）与 list 等价
+    from_list = encode_readmission_payload({"diagnosis_codes": ["A", "B", "C"]})
+    from_json = encode_readmission_payload({"diagnosis_codes": '["A", "B", "C"]'})
+    assert from_list[4] == from_json[4] == 3.0
+    # destination 枚举序数：home=0, home_health=1, snf=2, other=3
+    assert encode_readmission_payload({"discharge_destination": "home_health"})[5] == 1.0
+    assert encode_readmission_payload({"discharge_destination": "other"})[5] == 3.0
+
+
+def test_payload_from_row_skips_meta_and_parses_json():
+    from scripts.evaluate_model import payload_from_row
+
+    payload = payload_from_row(
+        {
+            "encounter_id": "enc-1",
+            "index_time": "2026-01-01T00:00:00+00:00",
+            "label": "1",
+            "offline_score": "0.5",
+            "serving_score": "0.5",
+            "heart_rate": "80",
+            "discharge_destination": "home",
+            "diagnosis_codes": '["I50.9"]',
+            "note_column": "",
+            "empty": None,
+        }
+    )
+    assert set(payload) == {"heart_rate", "discharge_destination", "diagnosis_codes"}
+    assert payload["heart_rate"] == 80.0
+    assert payload["diagnosis_codes"] == ["I50.9"]
+    assert isinstance(payload["discharge_destination"], str)

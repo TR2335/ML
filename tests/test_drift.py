@@ -206,3 +206,59 @@ def test_linear_margin_matches_sigmoid_inverse(tmp_path):
     margin = engine.linear_margin(event)
     score = engine.score(event).score
     assert abs(1 / (1 + math.exp(-margin)) - score) < 2e-4
+
+
+def test_recent_scores_and_band_share_gauges(tmp_path):
+    """Review I4：T7.4 指标半件回归钉——recent_scores 序、gauge 渲染、/api/metrics 聚合。"""
+    from fastapi.testclient import TestClient
+
+    from app.config import Settings
+    from app.domain import ClinicalEvent
+    from app.main import create_app
+    from app.observability import metrics
+    from app.risk import RiskEngine
+    from app.store import Store
+
+    # 1) recent_scores 按写入倒序返回
+    settings = Settings(model_path=str(tmp_path / "missing.json"))
+    with Store(str(tmp_path / "store.db")) as store:
+        store.seed(
+            [{"patient_id": "p1", "encounter_id": "e1", "display_name": "指标"}],
+            [
+                ClinicalEvent(
+                    event_type="vital_signs",
+                    patient_id="p1",
+                    encounter_id="e1",
+                    payload={"heart_rate": 80},
+                )
+            ],
+        )
+        engine = RiskEngine(settings)
+        store.upsert_score(
+            engine.score(
+                ClinicalEvent(
+                    event_type="vital_signs",
+                    patient_id="p1",
+                    encounter_id="e1",
+                    payload={"heart_rate": 80},
+                )
+            )
+        )
+        recent = store.recent_scores(limit=10)
+        assert len(recent) >= 1
+        assert recent[0].encounter_id == "e1"
+
+    # 2) set_share 渲染合法 gauge 行
+    metrics.set_share("medintel_band_share", {"low": 0.75, "high": 0.25}, label="band")
+    rendered = metrics.render()
+    assert "# TYPE medintel_band_share gauge" in rendered
+    assert 'medintel_band_share{band="low"} 0.750000' in rendered
+
+    # 3) /api/metrics 现场聚合（dev 种子已有分数 → 两条 gauge 必在）
+    application = create_app(
+        Settings(store_path=str(tmp_path / "app.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    with TestClient(application) as client:
+        text = client.get("/api/metrics").text
+    assert "medintel_band_share" in text
+    assert "medintel_missing_rate" in text

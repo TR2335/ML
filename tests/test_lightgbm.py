@@ -187,3 +187,117 @@ def test_tree_engine_rejects_corrupt_trees_block(tmp_path):
     bad.write_text(json.dumps(artifact), encoding="utf-8")
     with pytest.raises((RuntimeError, ValueError)):
         RiskEngine(Settings(model_path=str(bad), app_env="test", model_signature_required=False))
+
+
+def _strict_engine(tmp_path, mutate) -> None:
+    """构造被篡改的 lightgbm 工件并以 strict 模式加载——期望响亮拒绝。"""
+    import pytest
+
+    from app.config import Settings
+    from app.risk import RiskEngine
+
+    path = _train_lgbm(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    mutate(artifact)
+    bad = tmp_path / "mutated.json"
+    bad.write_text(json.dumps(artifact), encoding="utf-8")
+    with pytest.raises((RuntimeError, ValueError)):
+        RiskEngine(Settings(model_path=str(bad), app_env="test", model_signature_required=False))
+
+
+def test_lightgbm_without_trees_rejected(tmp_path):
+    """Review I1：algorithm=lightgbm 但缺 trees 不得静默恒分（0 权重线性路径）。"""
+
+    def drop_trees(artifact):
+        artifact["trees"] = None
+
+    _strict_engine(tmp_path, drop_trees)
+
+
+def test_unknown_algorithm_rejected(tmp_path):
+    """Review I1：未知 algorithm 字符串响亮拒绝，不按默认线性路径打分。"""
+
+    def bogus_algorithm(artifact):
+        artifact["algorithm"] = "gbdt_magic"
+
+    _strict_engine(tmp_path, bogus_algorithm)
+
+
+def test_tree_child_index_out_of_bounds_rejected(tmp_path):
+    """Review I2：子索引越界在载入期拒绝（否则走树时 IndexError 被兜底成静默降级）。"""
+
+    def oob_child(artifact):
+        for tree in artifact["trees"]:
+            for node in tree["nodes"]:
+                if not node["leaf"]:
+                    node["left"] = 10**6
+                    return
+
+    _strict_engine(tmp_path, oob_child)
+
+
+def test_tree_internal_negative_feature_index_rejected(tmp_path):
+    """Review I2：内部节点 feature_order_index=-1 会经 Python 负索引读到最后一个特征——静默错分。"""
+
+    def negative_index(artifact):
+        for tree in artifact["trees"]:
+            for node in tree["nodes"]:
+                if not node["leaf"]:
+                    node["feature_order_index"] = -1
+                    return
+
+    _strict_engine(tmp_path, negative_index)
+
+
+def test_tree_cycle_rejected(tmp_path):
+    """Review I2：环形 left/right 会让 serving 走树无限挂起——拍平序前序性保证 child>parent。"""
+
+    def make_cycle(artifact):
+        tree = artifact["trees"][0]
+        root = tree["nodes"][0]
+        if root["leaf"]:
+            root["leaf"] = False
+        # 根指向自己成环（child == parent 违反前序递增）
+        root["left"] = 0
+        root["right"] = 0
+        root["feature_order_index"] = 0
+        root["threshold"] = 0.0
+
+    _strict_engine(tmp_path, make_cycle)
+
+
+def test_unrounded_tree_margin_matches_booster(tmp_path):
+    """Review I3：未舍入口径 tree_raw_margin == booster.predict(raw_score=True)，严格 1e-6。"""
+    import math
+
+    import numpy as np
+    from lightgbm import Booster
+
+    from app.config import Settings
+    from app.domain import ClinicalEvent
+    from app.risk import RiskEngine
+    from scripts.train_model import build_demo_dataset, feature_names_for
+
+    path = _train_lgbm(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    booster = Booster(model_str=artifact["booster_text"])
+    _times, matrix, _labels = build_demo_dataset("deterioration_24h", 800)
+    names = feature_names_for("deterioration_24h")
+    engine = RiskEngine(Settings(model_path=path))
+    step = max(1, len(matrix) // 40)
+    for i in list(range(0, len(matrix), step))[:20]:
+        payload = {}
+        for j, name in enumerate(names):
+            if name.endswith("__missing"):
+                continue
+            value = matrix[i][j]
+            if not math.isnan(value):
+                payload[name] = value
+        event = ClinicalEvent(
+            event_type="vital_signs",
+            patient_id=f"m-p-{i}",
+            encounter_id=f"m-e-{i}",
+            payload=payload,
+        )
+        expected = float(booster.predict(np.asarray([matrix[i]], dtype=float), raw_score=True)[0])
+        assert abs(engine.tree_raw_margin(event) - expected) < 1e-6, (i, expected)

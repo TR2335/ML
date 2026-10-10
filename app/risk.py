@@ -229,8 +229,20 @@ class RiskEngine:
                     }
                 else:
                     raise ValueError("model calibration block is invalid")
+            algorithm = artifact.get("algorithm")
+            known_algorithms = {
+                "logistic_regression",
+                "logistic_regression_gradient_descent",
+                "logistic_regression_sklearn",
+                "lightgbm",
+            }
+            if algorithm is not None and algorithm not in known_algorithms:
+                raise ValueError("model algorithm is unsupported")
             trees_raw = artifact.get("trees")
             candidate_trees: list | None = None
+            # Review I1：lightgbm 必须带 trees——否则落 0 权重线性路径静默恒分。
+            if algorithm == "lightgbm" and (not isinstance(trees_raw, list) or not trees_raw):
+                raise ValueError("model trees block is invalid")
             if trees_raw is not None:
                 if not isinstance(trees_raw, list) or not trees_raw:
                     raise ValueError("model trees block is invalid")
@@ -240,7 +252,7 @@ class RiskEngine:
                     nodes = tree.get("nodes") if isinstance(tree, dict) else None
                     if not isinstance(nodes, list) or not nodes:
                         raise ValueError("model trees block is invalid")
-                    for node in nodes:
+                    for node_index, node in enumerate(nodes):
                         try:
                             index = int(node["feature_order_index"])
                             left = int(node["left"])
@@ -250,7 +262,18 @@ class RiskEngine:
                             bool(node["default_left"])
                         except (KeyError, TypeError, ValueError) as exc:
                             raise ValueError("model trees block is invalid") from exc
-                        if not (-1 <= index < order_len) or left < -1 or right < -1:
+                        if bool(node.get("leaf", False)):
+                            if left != -1 or right != -1:
+                                raise ValueError("model trees block is invalid")
+                            continue
+                        if not 0 <= index < order_len:
+                            # Review I2：内部节点负索引会读到最后一个特征（静默错分）。
+                            raise ValueError("model trees block is invalid")
+                        # 前序拍平保证子节点索引恒大于父节点——一条规则同时排除
+                        # 越界、回边与环（Review I2）。
+                        if not (0 <= left < len(nodes) and left > node_index):
+                            raise ValueError("model trees block is invalid")
+                        if not (0 <= right < len(nodes) and right > node_index):
                             raise ValueError("model trees block is invalid")
                     candidate_trees.append(
                         {"nodes": nodes, "shrinkage": float(tree.get("shrinkage", 1.0))}

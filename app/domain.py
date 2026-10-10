@@ -139,6 +139,14 @@ class ClinicalEvent(BaseModel):
         return self
 
 
+def targets_for_event(event: ClinicalEvent) -> list[TargetId]:
+    """评分触发策略：deterioration 逐事件；readmission 仅出院事件（WBS T8.2）。"""
+    targets: list[TargetId] = ["deterioration_24h"]
+    if event.event_type == "discharge":
+        targets.append("readmission_30d")
+    return targets
+
+
 class RiskFactor(BaseModel):
     feature: str
     label: str

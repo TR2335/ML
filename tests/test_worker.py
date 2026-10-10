@@ -120,6 +120,86 @@ def test_sync_loop_survives_rescore_failure(tmp_path, monkeypatch, caplog):
     assert (tmp_path / "heartbeat").exists()
 
 
+def test_score_event_discharge_triggers_readmission_only(tmp_path):
+    settings = Settings(model_path=str(tmp_path / "missing.json"))
+    with Store(str(tmp_path / "store.db")) as store:
+        vital = ClinicalEvent(
+            event_id="evt-v",
+            event_type="vital_signs",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+            payload={"heart_rate": 120},
+        )
+        discharge = ClinicalEvent(
+            event_id="evt-d",
+            event_type="discharge",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 20, 0, tzinfo=UTC),
+            payload={
+                "discharge_destination": "snf",
+                "los_days": 3.5,
+                "diagnosis_codes": ["N17.9"],
+                "comorbidity_index": 4.0,
+                "prior_utilization_12m": 2,
+                "ed_visits_6m": 2,
+            },
+        )
+        store.seed(
+            [{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}],
+            [vital, discharge],
+        )
+        engines = {
+            "deterioration_24h": RiskEngine(settings),
+            "readmission_30d": RiskEngine(settings, target_id="readmission_30d"),
+        }
+        score_event(store, engines, vital)
+        assert store.get_score("enc-1", "group-demo", "hospital-01", "readmission_30d") is None
+        score_event(store, engines, discharge)
+        readmission = store.get_score("enc-1", "group-demo", "hospital-01", "readmission_30d")
+        assert readmission is not None
+        assert readmission.as_of == datetime(2026, 1, 1, 20, 0, tzinfo=UTC)
+
+
+def test_rescore_uses_discharge_time_for_readmission(tmp_path):
+    with Store(str(tmp_path / "store.db")) as store:
+        discharge = ClinicalEvent(
+            event_id="evt-d1",
+            event_type="discharge",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+            payload={
+                "discharge_destination": "home",
+                "los_days": 2.0,
+                "diagnosis_codes": [],
+                "comorbidity_index": 0.0,
+                "prior_utilization_12m": 0,
+                "ed_visits_6m": 0,
+            },
+        )
+        later_vital = ClinicalEvent(
+            event_id="evt-v1",
+            event_type="vital_signs",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 22, 0, tzinfo=UTC),
+            payload={"heart_rate": 140},
+        )
+        store.seed(
+            [{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}],
+            [discharge, later_vital],
+        )
+        assert rescore_once(store) == 1
+        readmission = store.get_score("enc-1", "group-demo", "hospital-01", "readmission_30d")
+        assert readmission is not None
+        # 单次评分：as_of 钉在出院时刻，不被更晚的生命体征刷新
+        assert readmission.as_of == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+        deterioration = store.get_score("enc-1", "group-demo", "hospital-01")
+        assert deterioration.as_of == datetime(2026, 1, 1, 22, 0, tzinfo=UTC)
+
+
 def test_sync_backoff_grows_and_resets():
     from app.worker import sync_backoff_seconds
 

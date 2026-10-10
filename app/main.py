@@ -29,19 +29,13 @@ def create_app(settings_override=None, store_override=None, engine_override=None
         if local_settings.app_env == "dev":
             patients, events = demo_patients()
             local_store.seed(patients, events)
-            readmission_engine = RiskEngine(local_settings, target_id="readmission_30d")
+            # readmission_30d 只由出院事件触发（WBS T8.2），不再预置种子分数；
+            # 预置分数的 as_of 恒新于过去日期的出院事件，会永久挡住触发写入。
             for event in events:
                 if not local_store.get_score(
                     event.encounter_id, event.tenant_id, event.facility_id
                 ):
                     local_store.upsert_score(local_engine.score(event))
-                if not local_store.get_score(
-                    event.encounter_id,
-                    event.tenant_id,
-                    event.facility_id,
-                    target_id="readmission_30d",
-                ):
-                    local_store.upsert_score(readmission_engine.score(event))
         try:
             yield
         finally:

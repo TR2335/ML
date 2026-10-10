@@ -54,7 +54,7 @@ API（422）与导入脚本同时拒绝，错误信息给出字段名：
 
 ## 风险分数
 
-风险响应包含 `target_id`、`model_version`、`score`、`band`、`top_factors`、`missing_features`、`scored_at`、`status` 和 `human_review`。`target_id` 为 `deterioration_24h` 或 `readmission_30d`；`band` 为 `low`、`medium`、`high`、`critical`；处置状态为 `new`、`acknowledged`、`in_progress`、`resolved`。一次事件接入会返回两个独立目标的 `scores` 映射，并保留 `score` 作为 24 小时恶化目标的兼容字段。
+风险响应包含 `target_id`、`model_version`、`score`、`band`、`top_factors`、`missing_features`、`scored_at`、`status` 和 `human_review`。`target_id` 为 `deterioration_24h` 或 `readmission_30d`；`band` 为 `low`、`medium`、`high`、`critical`；处置状态为 `new`、`acknowledged`、`in_progress`、`resolved`。评分按目标触发：`deterioration_24h` 逐事件评分并始终出现在 `scores` 映射中；`readmission_30d` 只在 `event_type == "discharge"` 的出院事件上评分（单次评分，`as_of` 钉在首个出院事件时刻，后续生命体征不刷新），非出院事件的 `scores` 只含 deterioration。`score` 字段保留为 24 小时恶化目标的兼容字段。
 
 ## 结局表型（P5 标签派生）
 

@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,7 +27,8 @@ def test_health_and_patient_queue(tmp_path):
         detail = client.get(
             "/api/patients/enc-001", headers={"Authorization": "Bearer demo-clinician-token"}
         )
-        assert set(detail.json()["risks"]) == {"deterioration_24h", "readmission_30d"}
+        # readmission 仅出院触发（WBS T8.2）：演示种子不再预置，故只有 deterioration。
+        assert set(detail.json()["risks"]) == {"deterioration_24h"}
 
 
 def test_audit_requires_quality_role(tmp_path):
@@ -169,7 +171,7 @@ def test_event_id_conflict_is_rejected_and_missingness_is_exposed(tmp_path):
         first = client.post("/api/events", json=event, headers=headers)
         assert first.status_code == 202
         assert "missing_features" in first.json()["score"]
-        assert set(first.json()["scores"]) == {"deterioration_24h", "readmission_30d"}
+        assert set(first.json()["scores"]) == {"deterioration_24h"}
         conflict = client.post(
             "/api/events", json={**event, "payload": {"lactate": 4.0}}, headers=headers
         )
@@ -497,3 +499,94 @@ def test_invalid_event_backend_rejected_consistently(tmp_path):
     with pytest.raises(ValueError, match="unsupported event backend: kafka"):
         worker._require_known_backend(settings)
     store.close()
+
+
+def test_non_discharge_event_only_scores_deterioration(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/events",
+            json={
+                "event_id": "evt-vital-only",
+                "event_type": "vital_signs",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "occurred_at": "2026-09-09T08:30:00Z",
+                "payload": {"heart_rate": 120},
+            },
+            headers=headers,
+        )
+        assert response.status_code == 202
+        assert set(response.json()["scores"]) == {"deterioration_24h"}
+        assert response.json()["score"]["target_id"] == "deterioration_24h"
+
+
+def test_discharge_event_scores_readmission_exactly_once(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    discharge = {
+        "event_id": "evt-discharge-1",
+        "event_type": "discharge",
+        "patient_id": "pat-001",
+        "encounter_id": "enc-001",
+        "occurred_at": "2026-09-09T10:00:00Z",
+        "payload": {
+            "discharge_destination": "home",
+            "los_days": 4.0,
+            "diagnosis_codes": ["I50.9"],
+            "comorbidity_index": 1.0,
+            "prior_utilization_12m": 0,
+            "ed_visits_6m": 1,
+        },
+    }
+    with TestClient(application) as client:
+        first = client.post("/api/events", json=discharge, headers=headers)
+        assert first.status_code == 202
+        assert set(first.json()["scores"]) == {"deterioration_24h", "readmission_30d"}
+        later = client.post(
+            "/api/events",
+            json={
+                "event_id": "evt-vital-after",
+                "event_type": "vital_signs",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "occurred_at": "2026-09-09T12:00:00Z",
+                "payload": {"heart_rate": 130},
+            },
+            headers=headers,
+        )
+        assert later.status_code == 202
+        assert set(later.json()["scores"]) == {"deterioration_24h"}
+    from app.store import Store
+
+    with Store(str(tmp_path / "store.db")) as store:
+        readmission = store.get_score("enc-001", "group-demo", "hospital-01", "readmission_30d")
+        assert readmission is not None
+        assert readmission.as_of == datetime(2026, 9, 9, 10, 0, tzinfo=UTC)
+
+
+def test_discharge_event_missing_snapshot_is_422(tmp_path):
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    with TestClient(application) as client:
+        response = client.post(
+            "/api/events",
+            json={
+                "event_id": "evt-discharge-bad",
+                "event_type": "discharge",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "occurred_at": "2026-09-09T10:00:00Z",
+                "payload": {"discharge_destination": "home"},
+            },
+            headers=headers,
+        )
+        assert response.status_code == 422
+        assert "los_days" in str(response.json())

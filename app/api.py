@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
 
 from .config import Settings
-from .domain import ClinicalEvent, ReviewRequest, RiskScore, TargetId
+from .domain import ClinicalEvent, ReviewRequest, RiskScore, TargetId, targets_for_event
 from .messaging import RedisStreamPublisher, SyncPublisher
 from .observability import metrics
 from .risk import RiskEngine
@@ -25,7 +25,12 @@ def _degraded_code(reason: str) -> str:
 
 
 def score_all_targets(engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> list[RiskScore]:
-    return [target_engine.score(event) for target_engine in engines.values()]
+    # 按触发策略过滤：readmission 仅出院事件（WBS T8.2）。
+    return [
+        engines[target_id].score(event)
+        for target_id in targets_for_event(event)
+        if target_id in engines
+    ]
 
 
 def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRouter:

@@ -2,10 +2,11 @@ import logging
 import os
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .config import get_settings
-from .domain import ClinicalEvent, TargetId
+from .domain import ClinicalEvent, TargetId, targets_for_event
 from .messaging import RedisStreamConsumer
 from .observability import metrics
 from .risk import RiskEngine
@@ -30,6 +31,13 @@ def _touch_heartbeat() -> None:
         HEARTBEAT_PATH.touch()
     except OSError:
         LOGGER.warning("failed to update worker heartbeat at %s", HEARTBEAT_PATH)
+
+
+def _first_discharge(events: list[ClinicalEvent]) -> ClinicalEvent | None:
+    discharges = [event for event in events if event.event_type == "discharge"]
+    if not discharges:
+        return None
+    return min(discharges, key=lambda event: (event.occurred_at, event.event_id))
 
 
 def sync_backoff_seconds(base_interval: int, consecutive_failures: int) -> float:
@@ -76,8 +84,18 @@ def rescore_once(store: Store | None = None, engine: RiskEngine | None = None) -
                     as_of=events[-1].occurred_at,
                 )
                 scoring_event = events[-1].model_copy(update={"payload": snapshot})
-                for target_engine in engines.values():
-                    store.upsert_score(target_engine.score(scoring_event))
+                store.upsert_score(engines["deterioration_24h"].score(scoring_event))
+                discharge = _first_discharge(events)
+                if discharge is not None:
+                    discharge_snapshot = store.feature_snapshot(
+                        patient["encounter_id"],
+                        patient["tenant_id"],
+                        patient["facility_id"],
+                        as_of=discharge.occurred_at,
+                    )
+                    discharge_event = discharge.model_copy(update={"payload": discharge_snapshot})
+                    # upsert_score 的 as_of 防倒退：只在缺失或落后于出院时刻时写入。
+                    store.upsert_score(engines["readmission_30d"].score(discharge_event))
                 count += 1
         return count
     finally:
@@ -86,37 +104,47 @@ def rescore_once(store: Store | None = None, engine: RiskEngine | None = None) -
 
 
 def reconcile(store: Store, engines: dict[TargetId, RiskEngine]) -> int:
-    """Backfill missing or stale scores from durable events without regressing newer ones."""
+    """Backfill missing or stale scores from durable events without regressing newer ones.
+
+    readmission_30d 以首个出院事件为基准（WBS T8.2）：无出院事件则不要求该分数。
+    """
     count = 0
     for tenant_id, facility_id, encounter_id, latest in store.encounter_latest_event_times():
         scores = store.get_scores(encounter_id, tenant_id, facility_id)
-        stale = False
-        for target_id in engines:
-            score = scores.get(target_id)
-            if score is None:
-                stale = True
-                break
-            effective = score.as_of or score.scored_at
-            if effective < latest:
-                stale = True
-                break
-        if not stale:
-            continue
         events = store.events_for(encounter_id, tenant_id, facility_id)
         if not events:
             continue
-        snapshot = store.feature_snapshot(encounter_id, tenant_id, facility_id, as_of=latest)
-        scoring_event = max(events, key=lambda item: item.occurred_at).model_copy(
-            update={"payload": snapshot}
-        )
-        for target_engine in engines.values():
+        discharge = _first_discharge(events)
+        plans: list[tuple[TargetId, RiskEngine, datetime, ClinicalEvent | None]] = []
+        if "deterioration_24h" in engines:
+            current = scores.get("deterioration_24h")
+            if current is None or (current.as_of or current.scored_at) < latest:
+                plans.append(("deterioration_24h", engines["deterioration_24h"], latest, None))
+        if "readmission_30d" in engines and discharge is not None:
+            current = scores.get("readmission_30d")
+            if current is None or (current.as_of or current.scored_at) < discharge.occurred_at:
+                plans.append(
+                    (
+                        "readmission_30d",
+                        engines["readmission_30d"],
+                        discharge.occurred_at,
+                        discharge,
+                    )
+                )
+        if not plans:
+            continue
+        latest_event = max(events, key=lambda item: item.occurred_at)
+        for _target_id, target_engine, as_of, trigger in plans:
+            snapshot = store.feature_snapshot(encounter_id, tenant_id, facility_id, as_of=as_of)
+            source = trigger or latest_event
+            scoring_event = source.model_copy(update={"payload": snapshot})
             store.upsert_score(target_engine.score(scoring_event))
         count += 1
     return count
 
 
 def score_event(store: Store, engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> None:
-    """Score one durable event at its event time and persist every target."""
+    """Score one durable event at its event time and persist policy targets."""
     snapshot = store.feature_snapshot(
         event.encounter_id,
         event.tenant_id,
@@ -124,8 +152,11 @@ def score_event(store: Store, engines: dict[TargetId, RiskEngine], event: Clinic
         as_of=event.occurred_at,
     )
     scoring_event = event.model_copy(update={"payload": snapshot})
-    for target_engine in engines.values():
-        store.upsert_score(target_engine.score(scoring_event))
+    # 按触发策略过滤：readmission 仅出院事件（WBS T8.2）。
+    for target_id in targets_for_event(event):
+        target_engine = engines.get(target_id)
+        if target_engine is not None:
+            store.upsert_score(target_engine.score(scoring_event))
     metrics.inc("medintel_events_scored_total")
 
 

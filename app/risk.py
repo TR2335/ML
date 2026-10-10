@@ -84,6 +84,7 @@ class RiskEngine:
         self.thresholds = DEFAULT_THRESHOLDS[target_id].copy()
         self.feature_order: list[str] = list(FEATURES)
         self.preprocess: dict[str, dict[str, float]] | None = None
+        self.calibration: dict | None = None
         self.degraded = False
         self.degraded_reason: str | None = None
         self._model_path = model_path = (
@@ -170,6 +171,19 @@ class RiskEngine:
                 < 1
             ):
                 raise ValueError("model thresholds are invalid")
+            calibration = artifact.get("calibration")
+            candidate_calibration = None
+            if calibration is not None:
+                if not isinstance(calibration, dict) or calibration.get("method") != "platt":
+                    raise ValueError("model calibration block is invalid")
+                try:
+                    cal_a = float(calibration["a"])
+                    cal_b = float(calibration["b"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError("model calibration block is invalid") from exc
+                if not (math.isfinite(cal_a) and math.isfinite(cal_b)):
+                    raise ValueError("model calibration block is invalid")
+                candidate_calibration = {"method": "platt", "a": cal_a, "b": cal_b}
             # Commit only after every validation passed: a rejected artifact
             # must leave the engine state untouched.
             self.version = str(artifact["model_version"])
@@ -177,6 +191,7 @@ class RiskEngine:
             self.label_definition = str(artifact.get("label_definition", self.label_definition))
             self.feature_order = candidate_order
             self.preprocess = candidate_preprocess
+            self.calibration = candidate_calibration
             self.thresholds = candidate_thresholds
             self.weights.update(candidate_weights)
             self.bias = candidate_bias
@@ -292,6 +307,8 @@ class RiskEngine:
                     contribution = self.weights[feature] * abs(value - 37.0)
                 linear += contribution
                 contributions.append((feature, contribution, value))
+        if self.calibration is not None:
+            linear = self.calibration["a"] * linear + self.calibration["b"]
         score = round(self._sigmoid(linear), 4)
         band = (
             "critical"

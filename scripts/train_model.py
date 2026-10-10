@@ -176,10 +176,25 @@ def main() -> None:
     order = sorted(range(len(times)), key=lambda i: times[i]["index_time"])
     n = len(order)
     train_idx = order[: int(n * 0.6)]
+    cal_window = order[int(n * 0.6) : int(n * 0.8)]
     x = np.asarray(matrix, dtype=float)
     y = np.asarray(labels, dtype=int)
     pipeline, best_c = _fit_pipeline(times, matrix, labels)
     pipeline.fit(x[train_idx], y[train_idx])
+    if len(set(y[cal_window])) < 2:
+        # demo 标签在时间上集中（RRT 固定 48h），60-80% 时间段可能恒为单类——
+        # 回退全量 Platt，保留正确患病率（Plan Ruling：None 回退与其自身测试矛盾）。
+        cal_idx = order
+    else:
+        cal_idx = cal_window
+    z_cal = pipeline.decision_function(x[cal_idx]).reshape(-1, 1)
+    platt = LogisticRegression()
+    platt.fit(z_cal, y[cal_idx])
+    calibration_block = {
+        "method": "platt",
+        "a": float(platt.coef_[0][0]),
+        "b": float(platt.intercept_[0]),
+    }
     imputer = pipeline.named_steps["impute"]
     scaler = pipeline.named_steps["scale"]
     clf = pipeline.named_steps["clf"]
@@ -197,7 +212,7 @@ def main() -> None:
             }
             for i, name in enumerate(FEATURES_V2)
         },
-        "calibration": None,  # T6.2 填充
+        "calibration": calibration_block,
         "bias": float(clf.intercept_[0]),
         "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(FEATURES_V2)},
         "training_rows": len(y),

@@ -60,7 +60,7 @@ def test_artifact_contract_shape(tmp_path):
     assert artifact["feature_names"] == expected
     assert artifact["feature_order"] == expected
     assert artifact["algorithm"] == "logistic_regression_sklearn"
-    assert artifact["calibration"] is None  # T6.2 占位
+    assert artifact["calibration"] is not None  # T6.2 已填充（占位断言随之更新）
     assert set(artifact["preprocess"]) == set(expected)
     for entry in artifact["preprocess"].values():
         assert {"median", "mean", "std"} <= set(entry)
@@ -83,3 +83,49 @@ def test_missing_indicator_features_are_computed_by_serving(tmp_path):
     assert set(FEATURES) <= missing  # 基特征全部缺失
     assert not any(name.endswith("__missing") for name in missing)  # 指示列本身不算缺失
     assert engine.feature_order[-1] == "news2_score"
+
+
+def test_calibration_improves_or_ties_brier(tmp_path):
+    import copy
+
+    from app.config import Settings
+    from app.domain import ClinicalEvent
+    from app.risk import RiskEngine
+    from app.synthetic import FEATURES
+    from scripts.evaluate_model import binary_metrics
+    from scripts.train_model import build_demo_dataset
+
+    path = _train(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert artifact["calibration"] is not None
+    assert artifact["calibration"]["method"] == "platt"
+
+    _times, matrix, labels = build_demo_dataset("deterioration_24h", 480)
+    calibrated = RiskEngine(Settings(model_path=path))
+    raw_artifact = copy.deepcopy(artifact)
+    raw_artifact["calibration"] = None
+    raw_path = tmp_path / "raw.json"
+    raw_path.write_text(json.dumps(raw_artifact), encoding="utf-8")
+    uncalibrated = RiskEngine(Settings(model_path=str(raw_path)))
+
+    cal_scores: list[float] = []
+    raw_scores: list[float] = []
+    for row_index, row in enumerate(matrix):
+        payload = {
+            feature: row[i]
+            for i, feature in enumerate(FEATURES)
+            if row[i] == row[i]  # 非 NaN
+        }
+        if row[-1] == row[-1]:  # news2 非 NaN
+            payload["news2_score"] = row[-1]
+        event = ClinicalEvent(
+            event_type="vital_signs",
+            patient_id=f"cal-p-{row_index}",
+            encounter_id=f"cal-e-{row_index}",
+            payload=payload,
+        )
+        cal_scores.append(calibrated.score(event).score)
+        raw_scores.append(uncalibrated.score(event).score)
+    brier_cal = binary_metrics(labels, cal_scores, calibrated.thresholds["high"])["brier"]
+    brier_raw = binary_metrics(labels, raw_scores, uncalibrated.thresholds["high"])["brier"]
+    assert brier_cal <= brier_raw + 1e-9

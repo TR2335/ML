@@ -45,7 +45,7 @@ POSTGRES_PASSWORD=local docker compose up --build
 
 准备面试时从 [`docs/interview-guide.md`](docs/interview-guide.md) 开始。它包含 30 秒/3 分钟项目介绍、完整请求链路、模型指标、Redis 与一致性、医疗安全边界、20 个高频追问和七天训练计划。
 
-生产异步事件：设置 `EVENT_BACKEND=redis`、`REDIS_URL` 和 `REDIS_STREAM` 后，API 会先持久化事件再写入 Redis Stream，worker 使用 consumer group 计算两个目标并 ACK；处理失败的消息会留在 pending 列表中，下一次 worker 会尝试 reclaim，超过 `REDIS_MAX_DELIVERY_ATTEMPTS` 后转入死信流。生产应为 Redis 配置高可用、持久化、容量和死信运维策略。
+生产异步事件：设置 `EVENT_BACKEND=redis`、`REDIS_URL` 和 `REDIS_STREAM` 后，API 会先持久化事件再写入 Redis Stream，worker 使用 consumer group 按触发策略计算（`deterioration_24h` 逐事件、`readmission_30d` 仅出院事件）并 ACK；处理失败的消息会留在 pending 列表中，下一次 worker 会尝试 reclaim，超过 `REDIS_MAX_DELIVERY_ATTEMPTS` 后转入死信流。生产应为 Redis 配置高可用、持久化、容量和死信运维策略。
 
 本地启动 Redis/PostgreSQL 组合时使用 `POSTGRES_PASSWORD=local docker compose --profile future-infra up --build`，并在环境中设置 `STORAGE_BACKEND=postgres` 或 `EVENT_BACKEND=redis`。
 

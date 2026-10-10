@@ -1,3 +1,5 @@
+import sys
+
 from scripts.evaluate_model import binary_metrics
 
 
@@ -146,3 +148,79 @@ def test_labeled_csv_rejects_subgroup_analysis(tmp_path, monkeypatch):
     )
     with pytest.raises(SystemExit, match="subgroup analysis requires"):
         main()
+
+
+def test_labeled_csv_rejected_for_readmission(tmp_path, monkeypatch):
+    """Review I1：labeled_csv 三列 NEWS2 对比对 readmission 显式拒绝，不产出退化指标。"""
+    import pytest
+
+    from scripts.evaluate_model import main
+
+    csv_path = tmp_path / "holdout.csv"
+    csv_path.write_text(
+        "los_days,prior_utilization_12m,comorbidity_index,ed_visits_6m,label\n"
+        "2.0,0,1.0,0,1\n2.0,0,0.0,0,0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_model.py",
+            "--input",
+            str(csv_path),
+            "--input-format",
+            "labeled_csv",
+            "--target-id",
+            "readmission_30d",
+        ],
+    )
+    with pytest.raises(SystemExit, match="labeled_csv"):
+        main()
+
+
+def test_evaluate_cli_uses_explicit_model_for_readmission(tmp_path, monkeypatch):
+    """Review I1 同族：--model 必须对 readmission 目标生效（不得静默读默认路径）。"""
+    import json
+
+    from app.synthetic import FEATURES
+    from scripts.evaluate_model import main
+
+    artifact = tmp_path / "probe.json"
+    weights = {feature: 0.0 for feature in FEATURES}
+    artifact.write_text(
+        json.dumps(
+            {
+                "model_version": "probe-rm-v1",
+                "target_id": "readmission_30d",
+                "feature_names": FEATURES,
+                "weights": weights,
+                "bias": -2.0,
+                "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
+            }
+        ),
+        encoding="utf-8",
+    )
+    csv_path = tmp_path / "rows.csv"
+    csv_path.write_text("los_days,label\n1.0,1\n2.0,0\n", encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evaluate_model.py",
+            "--input",
+            str(csv_path),
+            "--target-id",
+            "readmission_30d",
+            "--model",
+            str(artifact),
+        ],
+    )
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        main()
+    report = json.loads(buffer.getvalue())
+    assert report["model_version"] == "probe-rm-v1"

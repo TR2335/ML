@@ -200,6 +200,80 @@ def test_rescore_uses_discharge_time_for_readmission(tmp_path):
         assert deterioration.as_of == datetime(2026, 1, 1, 22, 0, tzinfo=UTC)
 
 
+def test_reconcile_backfills_readmission_at_discharge_and_is_idempotent(tmp_path):
+    """Review I3：reconcile 的 readmission 分支——有出院 → 回填钉出院时刻；再跑幂等 0。"""
+    settings = Settings(model_path=str(tmp_path / "missing.json"))
+    with Store(str(tmp_path / "store.db")) as store:
+        discharge = ClinicalEvent(
+            event_id="evt-rc-d",
+            event_type="discharge",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+            payload={
+                "discharge_destination": "home",
+                "los_days": 3.0,
+                "diagnosis_codes": [],
+                "comorbidity_index": 1.0,
+                "prior_utilization_12m": 0,
+                "ed_visits_6m": 1,
+            },
+        )
+        vital = ClinicalEvent(
+            event_id="evt-rc-v",
+            event_type="vital_signs",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 18, 0, tzinfo=UTC),
+            payload={"heart_rate": 125},
+        )
+        store.seed(
+            [{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}],
+            [discharge, vital],
+        )
+        engines = {
+            "deterioration_24h": RiskEngine(settings),
+            "readmission_30d": RiskEngine(settings, target_id="readmission_30d"),
+        }
+        assert store.get_scores("enc-1", "group-demo", "hospital-01") == {}
+        assert reconcile(store, engines) == 1
+        scores = store.get_scores("enc-1", "group-demo", "hospital-01")
+        readmission = scores.get("readmission_30d")
+        assert readmission is not None
+        # 回填钉在首出院时刻，而非较晚的生命体征时刻
+        assert readmission.as_of == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
+        assert scores["deterioration_24h"].as_of == datetime(2026, 1, 1, 18, 0, tzinfo=UTC)
+        # 幂等：再次 reconcile 不再补算
+        assert reconcile(store, engines) == 0
+
+
+def test_reconcile_requires_no_readmission_score_without_discharge(tmp_path):
+    """Review I3：无出院事件 → reconcile 不要求/不产生 readmission 分数，且幂等 0。"""
+    settings = Settings(model_path=str(tmp_path / "missing.json"))
+    with Store(str(tmp_path / "store.db")) as store:
+        vital = ClinicalEvent(
+            event_id="evt-rr-v",
+            event_type="vital_signs",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 8, 0, tzinfo=UTC),
+            payload={"heart_rate": 130},
+        )
+        store.seed(
+            [{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}],
+            [vital],
+        )
+        engines = {
+            "deterioration_24h": RiskEngine(settings),
+            "readmission_30d": RiskEngine(settings, target_id="readmission_30d"),
+        }
+        assert reconcile(store, engines) == 1
+        scores = store.get_scores("enc-1", "group-demo", "hospital-01")
+        assert "deterioration_24h" in scores
+        assert "readmission_30d" not in scores
+        assert reconcile(store, engines) == 0
+
+
 def test_sync_backoff_grows_and_resets():
     from app.worker import sync_backoff_seconds
 

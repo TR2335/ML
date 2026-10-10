@@ -258,8 +258,15 @@ def main() -> None:
         if args.target_id == "deterioration_24h"
         else "data/readmission_model.json"
     )
+    # readmission 引擎按 readmission_model_path 选路径——双路径都指向给定模型，
+    # 否则 --model 被默认路径静默覆盖（Review I1 同族缺陷）。
     engine = RiskEngine(
-        Settings(model_path=str(model_path), app_env="dev"), target_id=args.target_id
+        Settings(
+            model_path=str(model_path),
+            readmission_model_path=str(model_path),
+            app_env="dev",
+        ),
+        target_id=args.target_id,
     )
     with args.input.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
@@ -279,6 +286,14 @@ def main() -> None:
     if args.input_format == "labeled_csv":
         if args.group_column:
             raise SystemExit("subgroup analysis requires --input-format default (Plan Ruling R12)")
+        if args.target_id == "readmission_30d":
+            # 三列 NEWS2 对比只对生命体征目标有意义；readmission 行是出院快照字段，
+            # 走 _payload 只会得到空 payload 的常数分——拒绝比算错更诚实（Review I1）。
+            raise SystemExit(
+                "labeled_csv three-way news2 comparison requires deterioration_24h; "
+                "for readmission_30d use --input-format default, scripts/thresholds.py, "
+                "or the promotion gate"
+            )
         comparison = comparison_metrics(rows, engine, args.label_column)
         report["evaluation"] = comparison["model"]
         report["comparison"] = comparison

@@ -322,7 +322,27 @@ Invoke-RestMethod http://localhost:8000/api/events -Method Post `
 
 ### 4. 切换目标和人工复核
 
-请求 `/api/patients?target_id=readmission_30d`，然后向 `/api/patients/enc-001/review` 提交：
+先投递一条出院事件——再入院分数只由出院事件触发（demo 种子不再预置，T8.2 语义）：
+
+```json
+{
+  "event_id": "evt-discharge-demo",
+  "event_type": "discharge",
+  "occurred_at": "2026-09-09T10:00:00Z",
+  "patient_id": "pat-001",
+  "encounter_id": "enc-001",
+  "payload": {
+    "discharge_destination": "home",
+    "los_days": 4.0,
+    "diagnosis_codes": ["I50.9"],
+    "comorbidity_index": 1.0,
+    "prior_utilization_12m": 0,
+    "ed_visits_6m": 1
+  }
+}
+```
+
+再请求 `/api/patients?target_id=readmission_30d`（此时应能看到 enc-001 的再入院分数），然后向 `/api/patients/enc-001/review` 提交：
 
 ```json
 {

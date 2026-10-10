@@ -60,7 +60,7 @@ POSTGRES_PASSWORD=ci docker compose config --quiet
 & .\.venv\Scripts\python.exe scripts\train_model.py --output data\readmission_model.json --target-id readmission_30d --version approved-readmission-v1
 ```
 
-事件接入会同时返回两个分数；患者列表可以用 `?target_id=readmission_30d` 切换目标，人工复核请求也携带 `target_id`。
+事件接入按目标触发返回分数：`deterioration_24h` 逐事件返回；`readmission_30d` 仅在 `event_type == "discharge"` 的出院事件上返回（单次评分，`as_of` 钉在首个出院事件时刻；非出院事件的 `scores` 只含 deterioration）。患者列表可以用 `?target_id=readmission_30d` 切换目标，人工复核请求也携带 `target_id`。
 
 ### 真实数据导入和验证
 

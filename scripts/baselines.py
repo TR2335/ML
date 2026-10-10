@@ -4,6 +4,7 @@ RCP NEWS2 Scale 1：五个生理组件按区间计 0–3 分；意识项（ACVPU
 缺测，不计入总分——报告与文档注明该局限（Plan Ruling R9）。
 """
 
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -54,3 +55,34 @@ def news2_score(row: Mapping[str, Any]) -> tuple[int, str]:
     else:
         band = "low"
     return total, band
+
+
+# LACE 分值表（Austin et al., CMAJ 2010；Ruling R-P8-5：离线环境未能在线核对原文，
+# 合并前请对照原文复核分箱边界）。总分 0–19。
+
+
+def lace_score(row: Mapping[str, Any]) -> int:
+    """Return the LACE readmission-risk index (0-19) for a discharge snapshot row."""
+    required = ("los_days", "prior_utilization_12m", "comorbidity_index", "ed_visits_6m")
+    values: dict[str, float] = {}
+    for name in required:
+        if name not in row or row[name] in ("", None):
+            raise ValueError(f"lace fields missing/invalid: {name}")
+        try:
+            numeric = float(row[name])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"lace fields missing/invalid: {name}") from exc
+        if not math.isfinite(numeric):
+            raise ValueError(f"lace fields missing/invalid: {name}")
+        values[name] = numeric
+
+    los = values["los_days"]
+    # 边界以测试点为准（1.5 与 3.9 同落 2-3 档；台账 Task 3 Ruling）。
+    length = 0 if los <= 1 else 1 if los < 4 else 2 if los < 7 else 3
+    admissions = values["prior_utilization_12m"]
+    admission = 0 if admissions < 1 else 2 if admissions < 2 else 4 if admissions < 3 else 7
+    charlson = values["comorbidity_index"]
+    comorbidity = 0 if charlson < 1 else 2 if charlson < 2 else 4 if charlson < 4 else 6
+    visits = values["ed_visits_6m"]
+    emergency = 0 if visits < 1 else 1 if visits < 2 else 2 if visits < 3 else 3
+    return length + admission + comorbidity + emergency

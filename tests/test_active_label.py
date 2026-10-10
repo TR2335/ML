@@ -51,3 +51,29 @@ def test_select_for_labeling_respects_top_n(tmp_path):
     picked = select_for_labeling(_rows(), engine, top_n=2)
     assert len(picked) == 2
     assert all("uncertainty" in row and "score" in row for row in picked)
+
+
+def test_engine_loader_uses_given_artifact_for_readmission(tmp_path):
+    """Review I1：--model 必须对 readmission 目标生效（此前被默认路径覆盖）。"""
+    from app.synthetic import FEATURES
+    from scripts.active_label import _engine_for
+
+    path = tmp_path / "rm.json"
+    weights = {feature: 0.0 for feature in FEATURES}
+    weights["creatinine"] = 0.5
+    path.write_text(
+        json.dumps(
+            {
+                "model_version": "rm-loader-v1",
+                "target_id": "readmission_30d",
+                "feature_names": FEATURES,
+                "weights": weights,
+                "bias": -2.0,
+                "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
+            }
+        ),
+        encoding="utf-8",
+    )
+    engine = _engine_for(str(path), "readmission_30d")
+    assert engine.version == "rm-loader-v1"
+    assert engine.target_id == "readmission_30d"

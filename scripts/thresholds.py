@@ -61,8 +61,37 @@ def main() -> None:
     parser.add_argument("--input", required=True)
     parser.add_argument("--label-column", default="label")
     parser.add_argument("--target-sensitivity", type=float, default=0.90)
+    parser.add_argument(
+        "--target-id",
+        choices=["deterioration_24h", "readmission_30d"],
+        default="deterioration_24h",
+    )
     args = parser.parse_args()
-    engine = RiskEngine(Settings(model_path=args.artifact, app_env="dev"))
+    # 加载前显式校验目标：dev 模式下 target 不符会静默回落默认权重、阈值照样回写
+    # （Review I1 的静默工件损坏）——这里直接拒绝。
+    try:
+        artifact = json.loads(Path(args.artifact).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"thresholds: cannot read artifact: {exc}") from exc
+    if artifact.get("target_id") != args.target_id:
+        raise SystemExit(
+            f"thresholds: target mismatch — artifact target_id is "
+            f"{artifact.get('target_id')!r}, requested {args.target_id!r}"
+        )
+    # 双路径都指向给定工件：readmission 引擎按 readmission_model_path 选路径。
+    engine = RiskEngine(
+        Settings(
+            model_path=args.artifact,
+            readmission_model_path=args.artifact,
+            app_env="dev",
+        ),
+        target_id=args.target_id,
+    )
+    if engine.degraded or engine.degraded_reason:
+        raise SystemExit(
+            f"thresholds: model failed to load for {args.target_id}: "
+            f"{engine.degraded_reason or 'degraded'}"
+        )
     with Path(args.input).open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
     labels, scores = evaluate_rows(rows, engine, args.label_column)

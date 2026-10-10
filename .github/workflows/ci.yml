@@ -25,10 +25,11 @@ jobs:
       - run: python -m compileall -q app scripts tests
       - run: ruff check app scripts tests
       - run: ruff format --check app scripts tests
-      - run: pytest -q
-      # data/*.json 不入库；--check 需先按默认参数复现工件（合成种子固定，见台账 Task 5）
+      # data/*.json 不入库；golden 测试与 --check 都依赖先按默认参数复现工件
+      # （合成种子固定，见台账 Task 5 / Final C1）——训练必须排在 pytest 之前。
       - run: python scripts/train_model.py --target-id deterioration_24h --output data/model.json
       - run: python scripts/train_model.py --target-id readmission_30d --output data/readmission_model.json
+      - run: pytest -q
       - run: python scripts/make_golden.py --check
       - run: python -m pip install pip-audit
       - run: pip-audit

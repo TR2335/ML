@@ -5,6 +5,7 @@
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -54,6 +55,27 @@ def select_for_labeling(rows: list[dict], engine: RiskEngine, top_n: int) -> lis
     return scored[: max(top_n, 0)]
 
 
+def _engine_for(model_path: str, target_id: str) -> RiskEngine:
+    """双路径都指向给定工件：readmission 引擎按 readmission_model_path 选路径，
+    否则 --model 被默认路径静默覆盖（Review I1）。加载前显式校验目标。"""
+    try:
+        artifact = json.loads(Path(model_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"model failed to load for {target_id}: {exc}") from exc
+    if artifact.get("target_id") != target_id:
+        raise SystemExit(
+            f"model failed to load for {target_id}: artifact target_id is "
+            f"{artifact.get('target_id')!r}"
+        )
+    settings = Settings(model_path=model_path, readmission_model_path=model_path, app_env="dev")
+    engine = RiskEngine(settings, target_id=target_id)
+    if engine.degraded or engine.degraded_reason:
+        raise SystemExit(
+            f"model failed to load for {target_id}: {engine.degraded_reason or 'degraded'}"
+        )
+    return engine
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rank unlabeled rows for human review")
     parser.add_argument("--input", required=True)
@@ -62,7 +84,7 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=100)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    engine = RiskEngine(Settings(model_path=args.model, app_env="dev"), target_id=args.target_id)
+    engine = _engine_for(args.model, args.target_id)
     with Path(args.input).open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         rows = list(reader)

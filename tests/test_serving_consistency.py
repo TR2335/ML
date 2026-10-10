@@ -40,7 +40,16 @@ def test_offline_online_scores_match(target_id, tmp_path):
     assert len(rows) == 200
     artifact_path = tmp_path / "model.json"
     artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
-    engine = RiskEngine(Settings(model_path=str(artifact_path), app_env="dev"), target_id=target_id)
+    # readmission 目标按 settings.readmission_model_path 选路径——必须显式指到 fixture
+    # 工件，否则测试静默加载 data/ 下的工件（fresh clone 上直接红，Review C1）。
+    engine = RiskEngine(
+        Settings(
+            model_path=str(artifact_path),
+            readmission_model_path=str(artifact_path),
+            app_env="dev",
+        ),
+        target_id=target_id,
+    )
     offline_labels, offline_scores = evaluate_rows(rows, engine, "label")
     serving_scores = [
         engine.score(

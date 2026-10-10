@@ -35,3 +35,99 @@ def test_threshold_ladder_rejects_impossible_ordering():
     # 所有分数相同 → 无法形成严格升序的三级
     with pytest.raises(ValueError, match="threshold"):
         derive_thresholds([0.5] * 10, [1, 0] * 5, target_sensitivity=0.9)
+
+
+def _gate_like_artifact(path, target_id: str, version: str) -> None:
+    import json
+
+    from app.synthetic import FEATURES
+
+    weights = {feature: 0.0 for feature in FEATURES}
+    weights["creatinine"] = 1.5
+    path.write_text(
+        json.dumps(
+            {
+                "model_version": version,
+                "target_id": target_id,
+                "feature_names": FEATURES,
+                "weights": weights,
+                "bias": -3.0,
+                "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _tiny_holdout(path) -> None:
+    # 8 个不同肌酐值 → 模型分值8 档，足够构造严格升序的三级阈值。
+    lines = ["creatinine,label"]
+    for creatinine in (5.0, 4.0, 3.0, 2.5, 1.0, 0.5, 0.2, 0.1):
+        lines.append(f"{creatinine},{1 if creatinine > 2 else 0}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_thresholds_cli_rejects_target_mismatch_with_clear_error(tmp_path):
+    """Review I1：--target-id 与工件不符必须响亮拒绝，禁止 dev 回落打分后回写。"""
+    import sys
+
+    import pytest
+
+    from scripts.thresholds import main as thresholds_main
+
+    artifact = tmp_path / "model.json"
+    holdout = tmp_path / "holdout.csv"
+    _gate_like_artifact(artifact, "deterioration_24h", "mis-v1")
+    _tiny_holdout(holdout)
+    before = artifact.read_text(encoding="utf-8")
+    old_argv = sys.argv
+    sys.argv = [
+        "thresholds.py",
+        "--artifact",
+        str(artifact),
+        "--input",
+        str(holdout),
+        "--target-id",
+        "readmission_30d",
+    ]
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            thresholds_main()
+    finally:
+        sys.argv = old_argv
+    # 拒绝语来自目标校验（含 "target"），而非 argparse 的 code=2
+    assert "target" in str(excinfo.value)
+    # 工件未被改写
+    assert artifact.read_text(encoding="utf-8") == before
+
+
+def test_thresholds_cli_derives_for_readmission_artifact(tmp_path):
+    """Review I1：--target-id readmission 必须加载给定工件而非默认路径。"""
+    import json
+    import sys
+
+    from scripts.thresholds import main as thresholds_main
+
+    artifact = tmp_path / "rm.json"
+    holdout = tmp_path / "holdout.csv"
+    _gate_like_artifact(artifact, "readmission_30d", "rm-t-v1")
+    _tiny_holdout(holdout)
+    old_argv = sys.argv
+    sys.argv = [
+        "thresholds.py",
+        "--artifact",
+        str(artifact),
+        "--input",
+        str(holdout),
+        "--target-id",
+        "readmission_30d",
+    ]
+    try:
+        thresholds_main()
+    finally:
+        sys.argv = old_argv
+    written = json.loads(artifact.read_text(encoding="utf-8"))
+    thresholds = written["thresholds"]
+    assert 0 < thresholds["medium"] < thresholds["high"] < thresholds["critical"] < 1
+    # 用的是给定工件（version 不变、阈值已被重写为分位切点）
+    assert written["model_version"] == "rm-t-v1"

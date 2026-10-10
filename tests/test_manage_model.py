@@ -69,6 +69,58 @@ def test_promote_gate_rejects_low_metric_artifact(tmp_path):
     assert not (registry / "manifest.json").exists()  # 拒绝后不得留下 manifest
 
 
+def test_promote_accepts_full_v2_deterioration_artifact(tmp_path):
+    """Review C2/Ruling R-P8-9：真实 21 维工件不得被 load_artifact 拒绝。"""
+    from scripts.manage_model import main as manage_main
+    from scripts.train_model import FEATURES_V2
+
+    artifact = tmp_path / "v2.json"
+    holdout = tmp_path / "holdout.csv"
+    weights = {feature: 0.0 for feature in FEATURES_V2}
+    weights["creatinine"] = 3.396
+    artifact.write_text(
+        json.dumps(
+            {
+                "model_version": "v2-shape",
+                "target_id": "deterioration_24h",
+                "algorithm": "logistic_regression_sklearn",
+                "feature_names": FEATURES_V2,
+                "feature_order": FEATURES_V2,
+                "preprocess": {
+                    feature: {"median": 0.0, "mean": 0.0, "std": 1.0} for feature in FEATURES_V2
+                },
+                "calibration": None,
+                "weights": weights,
+                "bias": -5.588,
+                "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_gate_rows(holdout, invert_labels=False)
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        manage_main()
+    finally:
+        sys.argv = old_argv
+    assert (registry / "manifest.json").exists()
+    eval_path = registry / "deterioration_24h" / "v2-shape" / "eval.json"
+    assert json.loads(eval_path.read_text(encoding="utf-8"))["passed"] is True
+
+
 def test_promote_gate_accepts_and_records_eval(tmp_path):
     from scripts.manage_model import main as manage_main
 

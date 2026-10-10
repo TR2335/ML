@@ -129,3 +129,10 @@ def test_calibration_improves_or_ties_brier(tmp_path):
     brier_cal = binary_metrics(labels, cal_scores, calibrated.thresholds["high"])["brier"]
     brier_raw = binary_metrics(labels, raw_scores, uncalibrated.thresholds["high"])["brier"]
     assert brier_cal <= brier_raw + 1e-9
+
+
+def test_calibration_fitted_on_train_segment_by_default(tmp_path):
+    """Review I2：默认数据校准段单类 → 回退 train 段拟合，val 段标签保持未见。"""
+    path = _train(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert artifact["calibration"]["fitted_on"] == "train_segment"

@@ -157,8 +157,9 @@
   },
   "calibration": {
     "method": "platt",
-    "a": 1.1097536767014586,
-    "b": -3.578089344029832
+    "a": 1.1675320868675247,
+    "b": -2.951744032288309,
+    "fitted_on": "train_segment"
   },
   "bias": -3.1783312846930674,
   "weights": {
@@ -188,8 +189,8 @@
   "best_C": 0.01,
   "label_definition": "synthetic_deterioration_24h",
   "thresholds": {
-    "medium": 0.1854,
-    "high": 0.2457,
-    "critical": 0.2719
+    "medium": 0.3221,
+    "high": 0.4091,
+    "critical": 0.4443
   }
 }

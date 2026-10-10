@@ -181,12 +181,18 @@ def main() -> None:
     y = np.asarray(labels, dtype=int)
     pipeline, best_c = _fit_pipeline(times, matrix, labels)
     pipeline.fit(x[train_idx], y[train_idx])
+    # 校准段选择（Review I2）：60-80% 时间段单类（demo 阳性集中在前半段）时回退
+    # train 段——val 段（80-100%）标签始终不进校准器；再单类才兜底全量。
     if len(set(y[cal_window])) < 2:
-        # demo 标签在时间上集中（RRT 固定 48h），60-80% 时间段可能恒为单类——
-        # 回退全量 Platt，保留正确患病率（Plan Ruling：None 回退与其自身测试矛盾）。
-        cal_idx = order
+        if len(set(y[train_idx])) < 2:
+            cal_idx = order
+            fitted_on = "full"
+        else:
+            cal_idx = train_idx
+            fitted_on = "train_segment"
     else:
         cal_idx = cal_window
+        fitted_on = "cal_segment"
     z_cal = pipeline.decision_function(x[cal_idx]).reshape(-1, 1)
     platt = LogisticRegression()
     platt.fit(z_cal, y[cal_idx])
@@ -194,6 +200,7 @@ def main() -> None:
         "method": "platt",
         "a": float(platt.coef_[0][0]),
         "b": float(platt.intercept_[0]),
+        "fitted_on": fitted_on,
     }
     imputer = pipeline.named_steps["impute"]
     scaler = pipeline.named_steps["scale"]

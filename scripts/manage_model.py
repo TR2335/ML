@@ -43,11 +43,21 @@ def digest(path: Path) -> str:
 
 
 def load_artifact(path: Path, target_id: str, version: str | None = None) -> dict[str, Any]:
+    from scripts.train_model import FEATURES_V2
+
     try:
         artifact = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read model artifact: {path}") from exc
-    if not isinstance(artifact, dict) or artifact.get("feature_names") != FEATURES:
+    # 按目标白名单接受已知工件形态（Review C2 / Ruling R-P8-9）：
+    # deterioration 10 维旧形态或 21 维 v2；readmission 当前 10 维（P8 落地后
+    # 由其计划扩展为出院快照编码形态）。
+    allowed = (
+        {tuple(FEATURES), tuple(FEATURES_V2)}
+        if target_id == "deterioration_24h"
+        else {tuple(FEATURES)}
+    )
+    if not isinstance(artifact, dict) or tuple(artifact.get("feature_names") or ()) not in allowed:
         raise ValueError("model feature signature is invalid")
     if artifact.get("target_id") != target_id:
         raise ValueError("model target signature is invalid")
@@ -82,7 +92,18 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
 
 
 def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> dict:
-    engine = RiskEngine(Settings(model_path=str(artifact_path), app_env="dev"), target_id=target_id)
+    # 双路径都指向被 promote 的工件（readmission 引擎按 readmission_model_path 选
+    # 路径）；strict 模式（app_env != dev）+ 显式关闭验签：工件加载失败直接抛错，
+    # 禁止 dev 静默回落用默认权重打分（Review I1）。
+    engine = RiskEngine(
+        Settings(
+            model_path=str(artifact_path),
+            readmission_model_path=str(artifact_path),
+            app_env="test",
+            model_signature_required=False,
+        ),
+        target_id=target_id,
+    )
     with input_csv.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
     labels, scores = evaluate_rows(rows, engine, "label")

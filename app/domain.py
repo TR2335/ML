@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -25,6 +25,23 @@ CLINICAL_NUMERIC_FIELDS = {
 }
 
 TargetId = Literal["deterioration_24h", "readmission_30d"]
+
+DISCHARGE_DESTINATIONS = ("home", "home_health", "snf", "other")
+DISCHARGE_SNAPSHOT_FIELDS = (
+    "discharge_destination",
+    "los_days",
+    "diagnosis_codes",
+    "comorbidity_index",
+    "prior_utilization_12m",
+    "ed_visits_6m",
+)
+# 出院快照数值范围：名称 -> (下界, 上界)；diagnosis_codes/discharge_destination 单独校验。
+DISCHARGE_NUMERIC_RANGES = {
+    "los_days": (0.0, 365.0),
+    "comorbidity_index": (0.0, 40.0),
+    "prior_utilization_12m": (0, 100),
+    "ed_visits_6m": (0, 100),
+}
 
 
 class PatientRecord(BaseModel):
@@ -88,6 +105,38 @@ class ClinicalEvent(BaseModel):
             if not math.isfinite(numeric) or not minimum <= numeric <= maximum:
                 raise ValueError(f"{field} must be between {minimum} and {maximum}")
         return payload
+
+    @model_validator(mode="after")
+    def validate_discharge_snapshot(self) -> "ClinicalEvent":
+        if self.event_type != "discharge":
+            return self
+        missing = [name for name in DISCHARGE_SNAPSHOT_FIELDS if name not in self.payload]
+        if missing:
+            raise ValueError("discharge payload missing fields: " + ", ".join(missing))
+        destination = self.payload["discharge_destination"]
+        if not isinstance(destination, str) or destination not in DISCHARGE_DESTINATIONS:
+            raise ValueError(
+                f"discharge_destination must be one of {', '.join(DISCHARGE_DESTINATIONS)}"
+            )
+        codes = self.payload["diagnosis_codes"]
+        if (
+            not isinstance(codes, list)
+            or len(codes) > 50
+            or not all(isinstance(code, str) and 0 < len(code) <= 16 for code in codes)
+        ):
+            raise ValueError("diagnosis_codes must be a list of up to 50 short strings")
+        for name, (minimum, maximum) in DISCHARGE_NUMERIC_RANGES.items():
+            value = self.payload[name]
+            if isinstance(value, bool):
+                # ValueError 让 pydantic 包装成 422；TypeError 会漏成 500（T3.3）。
+                raise ValueError(f"{name} must be numeric")  # noqa: TRY004
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be numeric") from exc
+            if not math.isfinite(numeric) or not minimum <= numeric <= maximum:
+                raise ValueError(f"{name} must be between {minimum} and {maximum}")
+        return self
 
 
 class RiskFactor(BaseModel):

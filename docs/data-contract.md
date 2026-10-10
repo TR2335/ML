@@ -33,6 +33,23 @@
 
 生产事件还应携带 `source_system`、`source_record_id`、`unit` 和 `quality_status`，用于数据血缘、去重、单位换算和质量门控；当前 API 已保留这些字段。
 
+## 出院快照（P8）
+
+`event_type == "discharge"` 的事件 `payload` 必须携带出院快照字段，缺任一字段或值非法会被
+API（422）与导入脚本同时拒绝，错误信息给出字段名：
+
+| 字段 | 类型 | 范围/约束 | 含义 |
+| --- | --- | --- | --- |
+| `discharge_destination` | str | `home` / `home_health` / `snf` / `other` | 出院去向 |
+| `los_days` | float | 0–365 | 住院天数 |
+| `diagnosis_codes` | list[str] | ≤50 条，每条 ≤16 字符 | 出院诊断编码 |
+| `comorbidity_index` | float | 0–40 | 合并症指数 |
+| `prior_utilization_12m` | int | 0–100 | 近 12 个月医疗利用次数 |
+| `ed_visits_6m` | int | 0–100 | 近 6 个月急诊次数（LACE 的 E 维度） |
+
+`readmission_30d` 只在出院事件上触发评分（见"风险分数"一节），特征即本快照的编码
+（`app/features.py::encode_readmission_payload`）。
+
 事件时间最多允许比服务端当前时间提前 `MAX_EVENT_FUTURE_SKEW_MINUTES` 分钟（默认 15 分钟），用于容忍院内时钟偏差并避免明显的未来数据进入实时风险队列。
 
 ## 风险分数

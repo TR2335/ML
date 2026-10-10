@@ -123,3 +123,85 @@ def test_import_records_rolls_back_completely_on_failure(tmp_path):
     assert summary["accepted_events"] == 1
     assert store.connection.execute("SELECT COUNT(*) AS n FROM patients").fetchone()["n"] == 1
     store.close()
+
+
+def test_discharge_payload_missing_fields_rejected():
+    import pytest
+
+    from app.domain import ClinicalEvent
+
+    with pytest.raises(Exception) as excinfo:
+        ClinicalEvent.model_validate(
+            {
+                "event_type": "discharge",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "payload": {"discharge_destination": "home"},
+            }
+        )
+    message = str(excinfo.value)
+    assert "discharge payload missing fields" in message
+    for field in (
+        "los_days",
+        "diagnosis_codes",
+        "comorbidity_index",
+        "prior_utilization_12m",
+        "ed_visits_6m",
+    ):
+        assert field in message
+
+
+def test_discharge_payload_full_accepted_and_validated():
+    import pytest
+
+    from app.domain import ClinicalEvent
+
+    event = ClinicalEvent.model_validate(
+        {
+            "event_type": "discharge",
+            "patient_id": "pat-001",
+            "encounter_id": "enc-001",
+            "payload": {
+                "discharge_destination": "snf",
+                "los_days": 5.2,
+                "diagnosis_codes": ["I50.9", "N17.9"],
+                "comorbidity_index": 2.0,
+                "prior_utilization_12m": 1,
+                "ed_visits_6m": 3,
+            },
+        }
+    )
+    assert event.event_type == "discharge"
+    # 枚举/范围非法也必须报字段名
+    with pytest.raises(Exception, match="discharge_destination"):
+        ClinicalEvent.model_validate(
+            {
+                "event_type": "discharge",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "payload": {
+                    "discharge_destination": "street",
+                    "los_days": 5.2,
+                    "diagnosis_codes": [],
+                    "comorbidity_index": 2.0,
+                    "prior_utilization_12m": 1,
+                    "ed_visits_6m": 0,
+                },
+            }
+        )
+    with pytest.raises(Exception, match="los_days"):
+        ClinicalEvent.model_validate(
+            {
+                "event_type": "discharge",
+                "patient_id": "pat-001",
+                "encounter_id": "enc-001",
+                "payload": {
+                    "discharge_destination": "home",
+                    "los_days": -1,
+                    "diagnosis_codes": [],
+                    "comorbidity_index": 2.0,
+                    "prior_utilization_12m": 1,
+                    "ed_visits_6m": 0,
+                },
+            }
+        )

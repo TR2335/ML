@@ -4,6 +4,9 @@ The importer accepts a JSON array or newline-delimited JSON (NDJSON). It is
 dry-run by default; pass ``--commit`` only after the validation summary has
 been reviewed. Production feeds should call the same contract through the
 hospital integration layer and preserve source identifiers for lineage.
+
+出院快照字段由 ``app/domain.py::ClinicalEvent`` 统一校验（API 与导入同一契约，
+缺字段即拒并报字段名）。
 """
 
 import argparse
@@ -67,6 +70,7 @@ def main() -> None:
     summary = {
         "patients": len(patients),
         "events": len(events),
+        "discharge_events": sum(1 for event in events if event.event_type == "discharge"),
         "commit": args.commit,
         "event_types": sorted({event.event_type for event in events}),
     }

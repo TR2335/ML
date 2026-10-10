@@ -86,6 +86,8 @@ class RiskEngine:
         self.feature_order: list[str] = list(FEATURES)
         self.preprocess: dict[str, dict[str, float]] | None = None
         self.calibration: dict | None = None
+        self.trees: list | None = None
+        self._last_tree_debug: dict | None = None
         self.degraded = False
         self.degraded_reason: str | None = None
         self._model_path = model_path = (
@@ -185,6 +187,32 @@ class RiskEngine:
                 if not (math.isfinite(cal_a) and math.isfinite(cal_b)):
                     raise ValueError("model calibration block is invalid")
                 candidate_calibration = {"method": "platt", "a": cal_a, "b": cal_b}
+            trees_raw = artifact.get("trees")
+            candidate_trees: list | None = None
+            if trees_raw is not None:
+                if not isinstance(trees_raw, list) or not trees_raw:
+                    raise ValueError("model trees block is invalid")
+                candidate_trees = []
+                order_len = len(candidate_order)
+                for tree in trees_raw:
+                    nodes = tree.get("nodes") if isinstance(tree, dict) else None
+                    if not isinstance(nodes, list) or not nodes:
+                        raise ValueError("model trees block is invalid")
+                    for node in nodes:
+                        try:
+                            index = int(node["feature_order_index"])
+                            left = int(node["left"])
+                            right = int(node["right"])
+                            float(node["threshold"])
+                            float(node["value"])
+                            bool(node["default_left"])
+                        except (KeyError, TypeError, ValueError) as exc:
+                            raise ValueError("model trees block is invalid") from exc
+                        if not (-1 <= index < order_len) or left < -1 or right < -1:
+                            raise ValueError("model trees block is invalid")
+                    candidate_trees.append(
+                        {"nodes": nodes, "shrinkage": float(tree.get("shrinkage", 1.0))}
+                    )
             # Commit only after every validation passed: a rejected artifact
             # must leave the engine state untouched.
             self.version = str(artifact["model_version"])
@@ -193,6 +221,7 @@ class RiskEngine:
             self.feature_order = candidate_order
             self.preprocess = candidate_preprocess
             self.calibration = candidate_calibration
+            self.trees = candidate_trees
             self.thresholds = candidate_thresholds
             self.weights.update(candidate_weights)
             self.bias = candidate_bias
@@ -261,6 +290,8 @@ class RiskEngine:
     def _score(self, event: ClinicalEvent) -> RiskScore:
         payload = event.payload
         feature_order = self.feature_order
+        if self.algorithm == "lightgbm" and self.trees:
+            return self._score_tree(event)
         # 统一解析：派生特征（再入院编码）→ 即时计算；__missing 指示列 → 0/1；
         # 其余 → payload 直取（缺失时 median 填补并计入 missing_features）。
         readmission_lookup = (
@@ -344,6 +375,107 @@ class RiskEngine:
             top_factors=[
                 RiskFactor(feature=f, label=LABELS.get(f, f), contribution=round(c, 3), value=v)
                 for f, c, v in factors
+            ],
+            missing_features=missing_features,
+            as_of=event.occurred_at,
+        )
+
+    def _score_tree(self, event: ClinicalEvent) -> RiskScore:
+        """Pure-python walk over serialized trees（WBS T7.1/T7.2；Ruling R-P7-3）。
+
+        树走分与 LightGBM predict 对齐：叶子值直接累加（训练时已含 learning_rate）；
+        缺失值按节点 default_left 下钻；归因按 (child_value - parent_value) 沿路累加。
+        """
+        payload = event.payload
+        feature_order = self.feature_order
+        readmission_lookup = (
+            dict(zip(READMISSION_FEATURES, encode_readmission_payload(payload)))
+            if any(name in feature_order for name in READMISSION_FEATURES)
+            else None
+        )
+        values: list[float] = []
+        missing_features: list[str] = []
+        for feature in feature_order:
+            if readmission_lookup is not None and feature in readmission_lookup:
+                value = readmission_lookup[feature]
+                if math.isnan(value):
+                    missing_features.append(feature)
+                values.append(value)
+                continue
+            base_name = feature[: -len("__missing")] if feature.endswith("__missing") else None
+            if base_name is not None and base_name in FEATURES:
+                # 指示列即时 0/1（Plan Ruling R2），永不计入 missing_features。
+                values.append(0.0 if payload.get(base_name) is not None else 1.0)
+                continue
+            raw = payload.get(feature)
+            if raw is None:
+                missing_features.append(feature)
+                values.append(math.nan)
+            else:
+                values.append(float(raw))
+        attributions: dict[str, float] = {feature: 0.0 for feature in feature_order}
+        raw_score = 0.0
+        tree_baseline = 0.0
+        for tree in self.trees:
+            nodes = tree["nodes"]
+            node = nodes[0]
+            if not node.get("leaf", False):
+                # 内部根的 internal_value 是树基线：归因 telescoping 到 leaf 时补回。
+                tree_baseline += float(node["value"])
+            while not node.get("leaf", False) and node["left"] != -1 and node["right"] != -1:
+                index = node["feature_order_index"]
+                value = values[index]
+                go_left = (math.isnan(value) and node["default_left"]) or (
+                    not math.isnan(value) and value <= node["threshold"]
+                )
+                child_index = node["left"] if go_left else node["right"]
+                child = nodes[child_index]
+                delta = float(child["value"]) - float(node.get("value", 0.0))
+                attributions[feature_order[index]] += delta
+                node = child
+            raw_score += float(node["value"])
+        pre_calibration_logit = raw_score + self.bias
+        # 当前解析仅允许 platt；isotonic 分支随 T7.3a 解析扩展同步加入。
+        if self.calibration is not None and self.calibration.get("method") == "platt":
+            raw_score = self.calibration["a"] * raw_score + self.calibration["b"]
+        score = round(self._sigmoid(raw_score + self.bias), 4)
+        self._last_tree_debug = {
+            "pre_logit": pre_calibration_logit,
+            "post_logit": raw_score + self.bias,
+            "attributions": dict(attributions),
+            "attribution_sum": sum(attributions.values()) + tree_baseline + self.bias,
+        }
+        band = (
+            "critical"
+            if score >= self.thresholds["critical"]
+            else "high"
+            if score >= self.thresholds["high"]
+            else "medium"
+            if score >= self.thresholds["medium"]
+            else "low"
+        )
+        factors = sorted(attributions.items(), key=lambda item: abs(item[1]), reverse=True)[:4]
+        return RiskScore(
+            patient_id=event.patient_id,
+            encounter_id=event.encounter_id,
+            tenant_id=event.tenant_id,
+            facility_id=event.facility_id,
+            model_version=self.version,
+            target_id=self.target_id,
+            score=score,
+            band=band,
+            top_factors=[
+                RiskFactor(
+                    feature=name,
+                    label=LABELS.get(name, name),
+                    contribution=round(value, 3),
+                    value=(
+                        float(payload.get(name))
+                        if name in payload and not isinstance(payload.get(name), str)
+                        else None
+                    ),
+                )
+                for name, value in factors
             ],
             missing_features=missing_features,
             as_of=event.occurred_at,

@@ -206,6 +206,173 @@ def _fit_pipeline(
     return make_pipeline(best_c), best_c
 
 
+MONOTONE_CONSTRAINTS_BY_TARGET: dict[str, list[int]] = {
+    # Ruling R-P7-2：按 DEFAULT_WEIGHTS 符号 + 临床方向（21 维 deterioration 序）。
+    "deterioration_24h": [
+        1,
+        1,
+        1,
+        -1,
+        1,
+        -1,
+        1,
+        1,
+        1,
+        1,  # 10 原始体征
+        *[0] * 10,  # __missing 指示列不约束
+        1,  # news2_score
+    ],
+    "readmission_30d": [1, 1, 1, 1, 1, 0],  # 出院字段；去向序数不约束
+}
+
+
+def _flatten_structure(structure: dict, nodes: list[dict]) -> int:
+    """递归拍平嵌套 tree_structure，返回根下标（就地写入 nodes）。"""
+    index = len(nodes)
+    if "leaf_value" in structure:
+        nodes.append(
+            {
+                "feature_order_index": -1,
+                "threshold": 0.0,
+                "left": -1,
+                "right": -1,
+                "value": float(structure["leaf_value"]),
+                "default_left": True,
+                "leaf": True,
+            }
+        )
+        return index
+    nodes.append(
+        {
+            "feature_order_index": int(structure["split_feature"]),
+            "threshold": float(structure["threshold"]),
+            "left": -1,
+            "right": -1,
+            "value": float(structure.get("internal_value", 0.0)),
+            "default_left": bool(structure.get("default_left", True)),
+            "leaf": False,
+        }
+    )
+    nodes[index]["left"] = _flatten_structure(structure["left_child"], nodes)
+    nodes[index]["right"] = _flatten_structure(structure["right_child"], nodes)
+    return index
+
+
+def _serialize_trees(booster) -> list[dict]:
+    """dump_model 的嵌套 tree_structure 拍平为 Ruling R-P7-3 节点列表。
+
+    LightGBM dump：叶子键 leaf_value、内部键 split_feature/threshold/
+    left_child/right_child/internal_value；预测即 Σ leaf_value（无需再乘
+    shrinkage——tree_info.shrinkage 实测为 1）。
+    """
+    dump = booster.dump_model()
+    trees: list[dict] = []
+    for tree in dump["tree_info"]:
+        nodes: list[dict] = []
+        _flatten_structure(tree["tree_structure"], nodes)
+        trees.append({"nodes": nodes, "shrinkage": float(tree.get("shrinkage", 1.0))})
+    return trees
+
+
+def _drift_reference(matrix: list[list[float]], names: list[str]) -> dict:
+    """每特征 lo/hi + 10 等宽箱占比 + 缺失率（Ruling R-P7-9）。"""
+    reference: dict[str, dict] = {}
+    for col, name in enumerate(names):
+        values = [row[col] for row in matrix]
+        finite = [v for v in values if not math.isnan(v)]
+        lo, hi = (min(finite), max(finite)) if finite else (0.0, 1.0)
+        if hi <= lo:
+            hi = lo + 1.0
+        width = (hi - lo) / 10
+        counts = [0] * 10
+        missing = 0
+        for value in values:
+            if math.isnan(value):
+                missing += 1
+            else:
+                counts[min(int((value - lo) / width), 9)] += 1
+        total = max(len(values), 1)
+        reference[name] = {
+            "lo": lo,
+            "hi": hi,
+            "proportions": [c / total for c in counts],
+            "missing_rate": missing / total,
+        }
+    return reference
+
+
+def _fit_lightgbm(
+    times: list[dict],
+    matrix: list[list[float]],
+    labels: list[int],
+    target_id: str,
+    trials: int,
+    seed: int,
+):
+    """Optuna 时间 CV：目标 = 平均 AUPRC − 0.1×ECE（WBS T7.1，Ruling R-P7-4）。"""
+    import optuna
+    from lightgbm import LGBMClassifier
+
+    from scripts.evaluate_model import binary_metrics
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    fold_rows = [
+        {"index_time": t["index_time"], "_i": i, "label": str(labels[i])}
+        for i, t in enumerate(times)
+    ]
+    folds = rolling_time_split(fold_rows, 3)
+    x = np.asarray(matrix, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    monotone = MONOTONE_CONSTRAINTS_BY_TARGET[target_id]
+
+    def objective(trial: "optuna.Trial") -> float:
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 50, 400),
+            "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
+            "num_leaves": trial.suggest_int("num_leaves", 7, 63),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 60),
+            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+        }
+        auprcs: list[float] = []
+        eces: list[float] = []
+        for train_rows, test_rows in folds:
+            train_idx = [r["_i"] for r in train_rows]
+            test_idx = [r["_i"] for r in test_rows]
+            if len({labels[i] for i in train_idx}) < 2:
+                continue
+            model = LGBMClassifier(
+                objective="binary",
+                monotone_constraints=monotone,
+                deterministic=True,
+                n_jobs=1,
+                verbose=-1,
+                **params,
+            )
+            model.fit(x[train_idx], y[train_idx])
+            pred = model.predict_proba(x[test_idx])[:, 1]
+            metrics = binary_metrics([labels[i] for i in test_idx], list(map(float, pred)), 0.5)
+            auprcs.append(metrics["auprc"] or 0.0)
+            eces.append(metrics["ece"] or 0.0)
+        if not auprcs:
+            return -1.0
+        return sum(auprcs) / len(auprcs) - 0.1 * (sum(eces) / len(eces))
+
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study = optuna.create_study(direction="maximize", sampler=sampler)
+    study.optimize(objective, n_trials=trials, show_progress_bar=False)
+    best = LGBMClassifier(
+        objective="binary",
+        monotone_constraints=monotone,
+        deterministic=True,
+        n_jobs=1,
+        verbose=-1,
+        **study.best_params,
+    )
+    return best, study
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/model.json")
@@ -216,6 +383,14 @@ def main() -> None:
         choices=["deterioration_24h", "readmission_30d"],
         default="deterioration_24h",
     )
+    parser.add_argument(
+        "--algorithm",
+        choices=["logistic", "lightgbm"],
+        default="logistic",
+        help="挑战者算法（Ruling R-P7-1：默认保持 logistic，golden 不换代）",
+    )
+    parser.add_argument("--trials", type=int, default=100, help="Optuna 试验数（Ruling R-P7-4）")
+    parser.add_argument("--seed", type=int, default=20261010, help="Optuna/采样种子")
     args = parser.parse_args()
     times, matrix, labels = build_demo_dataset(args.target_id, args.rows)
     order = sorted(range(len(times)), key=lambda i: times[i]["index_time"])
@@ -224,59 +399,91 @@ def main() -> None:
     cal_window = order[int(n * 0.6) : int(n * 0.8)]
     x = np.asarray(matrix, dtype=float)
     y = np.asarray(labels, dtype=int)
-    pipeline, best_c = _fit_pipeline(times, matrix, labels)
-    pipeline.fit(x[train_idx], y[train_idx])
-    # 校准段选择（Review I2）：60-80% 时间段单类（demo 阳性集中在前半段）时回退
-    # train 段——val 段（80-100%）标签始终不进校准器；再单类才兜底全量。
-    if len(set(y[cal_window])) < 2:
-        if len(set(y[train_idx])) < 2:
-            cal_idx = order
-            fitted_on = "full"
-        else:
-            cal_idx = train_idx
-            fitted_on = "train_segment"
-    else:
-        cal_idx = cal_window
-        fitted_on = "cal_segment"
-    z_cal = pipeline.decision_function(x[cal_idx]).reshape(-1, 1)
-    platt = LogisticRegression()
-    platt.fit(z_cal, y[cal_idx])
-    calibration_block = {
-        "method": "platt",
-        "a": float(platt.coef_[0][0]),
-        "b": float(platt.intercept_[0]),
-        "fitted_on": fitted_on,
-    }
-    imputer = pipeline.named_steps["impute"]
-    scaler = pipeline.named_steps["scale"]
-    clf = pipeline.named_steps["clf"]
     feature_names = feature_names_for(args.target_id)
-    artifact = {
-        "model_version": args.version,
-        "target_id": args.target_id,
-        "algorithm": "logistic_regression_sklearn",
-        "feature_names": feature_names,
-        "feature_order": feature_names,
-        "preprocess": {
-            name: {
-                "median": float(imputer.statistics_[i]),
-                "mean": float(scaler.mean_[i]),
-                "std": float(scaler.scale_[i]) or 1.0,
-            }
-            for i, name in enumerate(feature_names)
-        },
-        "calibration": calibration_block,
-        "bias": float(clf.intercept_[0]),
-        "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(feature_names)},
-        "training_rows": len(y),
-        "best_C": best_c,
-        "label_definition": f"synthetic_{args.target_id}",
-        "thresholds": TARGET_THRESHOLDS[args.target_id],
-    }
+    drift_reference = _drift_reference(matrix, feature_names)
+    if args.algorithm == "lightgbm":
+        model, study = _fit_lightgbm(times, matrix, labels, args.target_id, args.trials, args.seed)
+        model.fit(x[train_idx], y[train_idx])
+        booster = model.booster_
+        artifact = {
+            "model_version": args.version,
+            "target_id": args.target_id,
+            "algorithm": "lightgbm",
+            "feature_names": feature_names,
+            "feature_order": feature_names,
+            "preprocess": None,
+            # T7.3a 起与 logistic 共用 isotonic 回填链（本任务先 None，入台账）。
+            "calibration": None,
+            "bias": 0.0,
+            "weights": {name: 0.0 for name in feature_names},
+            "trees": _serialize_trees(booster),
+            "booster_text": booster.model_to_string(),
+            "drift_reference": drift_reference,
+            "optuna": {
+                "trials": args.trials,
+                "seed": args.seed,
+                "best_params": study.best_params,
+                "best_value": study.best_value,
+            },
+            "training_rows": len(y),
+            "label_definition": f"synthetic_{args.target_id}",
+            "thresholds": TARGET_THRESHOLDS[args.target_id],
+        }
+    else:
+        pipeline, best_c = _fit_pipeline(times, matrix, labels)
+        pipeline.fit(x[train_idx], y[train_idx])
+        # 校准段选择（Review I2）：60-80% 时间段单类（demo 阳性集中在前半段）时回退
+        # train 段——val 段（80-100%）标签始终不进校准器；再单类才兜底全量。
+        if len(set(y[cal_window])) < 2:
+            if len(set(y[train_idx])) < 2:
+                cal_idx = order
+                fitted_on = "full"
+            else:
+                cal_idx = train_idx
+                fitted_on = "train_segment"
+        else:
+            cal_idx = cal_window
+            fitted_on = "cal_segment"
+        z_cal = pipeline.decision_function(x[cal_idx]).reshape(-1, 1)
+        platt = LogisticRegression()
+        platt.fit(z_cal, y[cal_idx])
+        calibration_block = {
+            "method": "platt",
+            "a": float(platt.coef_[0][0]),
+            "b": float(platt.intercept_[0]),
+            "fitted_on": fitted_on,
+        }
+        imputer = pipeline.named_steps["impute"]
+        scaler = pipeline.named_steps["scale"]
+        clf = pipeline.named_steps["clf"]
+        artifact = {
+            "model_version": args.version,
+            "target_id": args.target_id,
+            "algorithm": "logistic_regression_sklearn",
+            "feature_names": feature_names,
+            "feature_order": feature_names,
+            "preprocess": {
+                name: {
+                    "median": float(imputer.statistics_[i]),
+                    "mean": float(scaler.mean_[i]),
+                    "std": float(scaler.scale_[i]) or 1.0,
+                }
+                for i, name in enumerate(feature_names)
+            },
+            "calibration": calibration_block,
+            "bias": float(clf.intercept_[0]),
+            "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(feature_names)},
+            "training_rows": len(y),
+            "best_C": best_c,
+            "drift_reference": drift_reference,
+            "label_definition": f"synthetic_{args.target_id}",
+            "thresholds": TARGET_THRESHOLDS[args.target_id],
+        }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"wrote {output} ({args.version}, C={best_c}, rows={len(y)})")
+    detail = f"C={best_c}" if args.algorithm == "logistic" else f"trials={args.trials}"
+    print(f"wrote {output} ({args.version}, {detail}, rows={len(y)})")
 
 
 if __name__ == "__main__":

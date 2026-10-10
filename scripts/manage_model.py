@@ -8,16 +8,27 @@ with an approved artifact store while preserving the manifest shape.
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
+# 直接以 `python scripts/x.py` 运行时根目录不在 sys.path（Ruling R14）。
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.config import Settings
+from app.risk import RiskEngine
 from app.synthetic import FEATURES
+from scripts.baselines import news2_score
+from scripts.evaluate_model import binary_metrics, evaluate_rows
+from scripts.validate import bootstrap_metric
 
 TARGETS = {"deterioration_24h", "readmission_30d"}
 VERSION_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -70,9 +81,45 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> dict:
+    engine = RiskEngine(Settings(model_path=str(artifact_path), app_env="dev"), target_id=target_id)
+    with input_csv.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    labels, scores = evaluate_rows(rows, engine, "label")
+    if not labels or not sum(labels):
+        raise SystemExit("promotion gate rejected: holdout needs labels and at least one positive")
+
+    def auprc_metric(lab: list[int], sco: list[float]) -> float:
+        return binary_metrics(lab, sco, engine.thresholds["high"])["auprc"] or 0.0
+
+    point, lo, hi = bootstrap_metric(labels, scores, auprc_metric, n=1000, seed=20260928)
+    news2_scores = [
+        news2_score({f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)})[0]
+        / 15
+        for row in rows
+    ]
+    news2_auprc = binary_metrics(labels, news2_scores, 7 / 15)["auprc"] or 0.0
+    ece = binary_metrics(labels, scores, engine.thresholds["high"])["ece"]
+    report = {
+        "passed": bool(lo >= news2_auprc and ece is not None and ece < 0.05),
+        "auprc_ci": {"point": point, "lo": lo, "hi": hi, "n": 1000, "seed": 20260928},
+        "news2_auprc": news2_auprc,
+        "ece": ece,
+        "gate": {"rule": "auprc_ci.lo >= news2_auprc and ece < 0.05", "max_ece": 0.05},
+    }
+    if not report["passed"]:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        raise SystemExit(
+            f"promotion gate rejected: auprc CI lo {lo:.4f} vs news2 {news2_auprc:.4f}; "
+            f"ece {None if ece is None else round(ece, 4)} (need < 0.05)"
+        )
+    return report
+
+
 def promote(args: argparse.Namespace) -> None:
     artifact_path = Path(args.artifact)
     artifact = load_artifact(artifact_path, args.target_id, args.version)
+    gate_report = run_promotion_gate(artifact_path, args.target_id, Path(args.input))
     version = str(artifact["model_version"])
     registry = Path(args.registry_dir)
     destination = registry / args.target_id / f"{version}.json"
@@ -87,6 +134,11 @@ def promote(args: argparse.Namespace) -> None:
         "sha256": file_hash,
     }
     atomic_write(manifest_path, manifest)
+    eval_dir = registry / args.target_id / version
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    (eval_dir / "eval.json").write_text(
+        json.dumps(gate_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     if args.serving_path:
         serving_path = Path(args.serving_path)
         serving_path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +189,9 @@ def main() -> None:
     promote_parser = subparsers.add_parser("promote")
     promote_parser.add_argument("--artifact", required=True)
     promote_parser.add_argument("--target-id", choices=sorted(TARGETS), required=True)
+    promote_parser.add_argument(
+        "--input", required=True, help="labeled holdout CSV for the promotion gate"
+    )
     promote_parser.add_argument("--version")
     promote_parser.add_argument("--serving-path")
     promote_parser.set_defaults(handler=promote)

@@ -24,6 +24,25 @@ from app.risk import RiskEngine
 from app.synthetic import FEATURES
 
 
+def _expected_calibration_error(
+    labels: list[int], scores: list[float], bins: int = 10
+) -> float | None:
+    if not labels:
+        return None
+    total = len(labels)
+    buckets: list[list[tuple[int, float]]] = [[] for _ in range(bins)]
+    for label, score in zip(labels, scores):
+        buckets[min(int(score * bins), bins - 1)].append((label, score))
+    ece = 0.0
+    for bucket in buckets:
+        if not bucket:
+            continue
+        confidence = sum(score for _, score in bucket) / len(bucket)
+        accuracy = sum(label for label, _ in bucket) / len(bucket)
+        ece += len(bucket) / total * abs(accuracy - confidence)
+    return ece
+
+
 def binary_metrics(
     labels: list[int], scores: list[float], threshold: float
 ) -> dict[str, float | int | None]:
@@ -67,6 +86,7 @@ def binary_metrics(
         "brier": sum((score - label) ** 2 for label, score in zip(labels, scores)) / len(labels)
         if labels
         else None,
+        "ece": _expected_calibration_error(labels, scores),
         "sensitivity": tp / positives if positives else None,
         "specificity": tn / negatives if negatives else None,
         "ppv": tp / (tp + fp) if tp + fp else None,

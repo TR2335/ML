@@ -77,10 +77,14 @@ def test_fallback_is_explicitly_degraded(tmp_path):
 
 
 def test_model_registry_promote_and_rollback(tmp_path, monkeypatch):
+    from tests.test_manage_model import _write_gate_artifact, _write_gate_rows
+
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
-    write_model(first, version="v1")
-    write_model(second, version="v2")
+    _write_gate_artifact(first, "v1")
+    _write_gate_artifact(second, "v2")
+    holdout = tmp_path / "holdout.csv"
+    _write_gate_rows(holdout, invert_labels=False)
     registry = tmp_path / "registry"
     serving = tmp_path / "serving.json"
     monkeypatch.setattr(
@@ -95,6 +99,8 @@ def test_model_registry_promote_and_rollback(tmp_path, monkeypatch):
             str(first),
             "--target-id",
             "deterioration_24h",
+            "--input",
+            str(holdout),
             "--serving-path",
             str(serving),
         ],
@@ -119,6 +125,8 @@ def test_model_registry_promote_and_rollback(tmp_path, monkeypatch):
             str(second),
             "--target-id",
             "deterioration_24h",
+            "--input",
+            str(holdout),
             "--serving-path",
             str(serving),
         ],

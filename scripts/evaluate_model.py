@@ -108,6 +108,8 @@ def evaluate_rows(
         payload = {
             feature: float(row[feature]) for feature in FEATURES if row.get(feature, "") != ""
         }
+        if row.get("news2_score", "") not in ("", None):
+            payload["news2_score"] = float(row["news2_score"])
         event = ClinicalEvent(
             event_type="vital_signs",
             patient_id=row.get("patient_id", f"validation-patient-{index}"),

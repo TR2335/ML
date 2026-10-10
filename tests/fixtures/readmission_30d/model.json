@@ -1,0 +1,195 @@
+{
+  "model_version": "p6-golden-v1",
+  "target_id": "readmission_30d",
+  "algorithm": "logistic_regression_sklearn",
+  "feature_names": [
+    "age",
+    "heart_rate",
+    "respiratory_rate",
+    "systolic_bp",
+    "temperature",
+    "spo2",
+    "wbc",
+    "creatinine",
+    "lactate",
+    "prior_admissions_30d",
+    "age__missing",
+    "heart_rate__missing",
+    "respiratory_rate__missing",
+    "systolic_bp__missing",
+    "temperature__missing",
+    "spo2__missing",
+    "wbc__missing",
+    "creatinine__missing",
+    "lactate__missing",
+    "prior_admissions_30d__missing",
+    "news2_score"
+  ],
+  "feature_order": [
+    "age",
+    "heart_rate",
+    "respiratory_rate",
+    "systolic_bp",
+    "temperature",
+    "spo2",
+    "wbc",
+    "creatinine",
+    "lactate",
+    "prior_admissions_30d",
+    "age__missing",
+    "heart_rate__missing",
+    "respiratory_rate__missing",
+    "systolic_bp__missing",
+    "temperature__missing",
+    "spo2__missing",
+    "wbc__missing",
+    "creatinine__missing",
+    "lactate__missing",
+    "prior_admissions_30d__missing",
+    "news2_score"
+  ],
+  "preprocess": {
+    "age": {
+      "median": 58.0,
+      "mean": 57.506,
+      "std": 20.171084023092728
+    },
+    "heart_rate": {
+      "median": 82.0,
+      "mean": 82.236,
+      "std": 11.732475044365817
+    },
+    "respiratory_rate": {
+      "median": 16.0,
+      "mean": 16.458666666666666,
+      "std": 2.9052179876139284
+    },
+    "systolic_bp": {
+      "median": 125.0,
+      "mean": 125.72866666666667,
+      "std": 12.748400352811155
+    },
+    "temperature": {
+      "median": 36.8,
+      "mean": 36.83500000000012,
+      "std": 0.3946073998292504
+    },
+    "spo2": {
+      "median": 98.0,
+      "mean": 97.52133333333333,
+      "std": 1.7922643654203452
+    },
+    "wbc": {
+      "median": 7.9,
+      "mean": 7.9649999999999865,
+      "std": 2.3688692801981834
+    },
+    "creatinine": {
+      "median": 1.0,
+      "mean": 1.005,
+      "std": 0.2384568444533852
+    },
+    "lactate": {
+      "median": 1.3,
+      "mean": 1.315533333333332,
+      "std": 0.37745469779682295
+    },
+    "prior_admissions_30d": {
+      "median": 0.0,
+      "mean": 0.4726666666666667,
+      "std": 0.5072010339982438
+    },
+    "age__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "heart_rate__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "respiratory_rate__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "systolic_bp__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "temperature__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "spo2__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "wbc__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "creatinine__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "lactate__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "prior_admissions_30d__missing": {
+      "median": 0.0,
+      "mean": 0.0,
+      "std": 1.0
+    },
+    "news2_score": {
+      "median": 1.0,
+      "mean": 0.798,
+      "std": 0.9851544718130849
+    }
+  },
+  "calibration": {
+    "method": "platt",
+    "a": 0.39839381025693826,
+    "b": -2.681212703868228
+  },
+  "bias": -0.045250852744726185,
+  "weights": {
+    "age": 0.09684548118691677,
+    "heart_rate": -0.07869325474565655,
+    "respiratory_rate": 0.09777758861318664,
+    "systolic_bp": -0.009342254979810736,
+    "temperature": -0.13556735353206448,
+    "spo2": 0.07003197289168309,
+    "wbc": 0.0878016504438072,
+    "creatinine": 0.05683816727187276,
+    "lactate": 0.20249802686589083,
+    "prior_admissions_30d": 0.08002098046073064,
+    "age__missing": 0.0,
+    "heart_rate__missing": 0.0,
+    "respiratory_rate__missing": 0.0,
+    "systolic_bp__missing": 0.0,
+    "temperature__missing": 0.0,
+    "spo2__missing": 0.0,
+    "wbc__missing": 0.0,
+    "creatinine__missing": 0.0,
+    "lactate__missing": 0.0,
+    "prior_admissions_30d__missing": 0.0,
+    "news2_score": 0.0788424811594002
+  },
+  "training_rows": 2500,
+  "best_C": 0.1,
+  "label_definition": "synthetic_readmission_30d",
+  "thresholds": {
+    "medium": 0.15,
+    "high": 0.3,
+    "critical": 0.55
+  }
+}

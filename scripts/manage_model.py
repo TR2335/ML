@@ -50,12 +50,13 @@ def load_artifact(path: Path, target_id: str, version: str | None = None) -> dic
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot read model artifact: {path}") from exc
     # 按目标白名单接受已知工件形态（Review C2 / Ruling R-P8-9）：
-    # deterioration 10 维旧形态或 21 维 v2；readmission 当前 10 维（P8 落地后
-    # 由其计划扩展为出院快照编码形态）。
+    # deterioration 10 维旧形态或 21 维 v2；readmission 10 维旧形态或出院快照编码。
+    from app.features import READMISSION_FEATURES
+
     allowed = (
         {tuple(FEATURES), tuple(FEATURES_V2)}
         if target_id == "deterioration_24h"
-        else {tuple(FEATURES)}
+        else {tuple(FEATURES), tuple(READMISSION_FEATURES)}
     )
     if not isinstance(artifact, dict) or tuple(artifact.get("feature_names") or ()) not in allowed:
         raise ValueError("model feature signature is invalid")
@@ -114,25 +115,42 @@ def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> 
         return binary_metrics(lab, sco, engine.thresholds["high"])["auprc"] or 0.0
 
     point, lo, hi = bootstrap_metric(labels, scores, auprc_metric, n=1000, seed=20260928)
-    news2_scores = [
-        news2_score({f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)})[0]
-        / 15
-        for row in rows
-    ]
-    news2_auprc = binary_metrics(labels, news2_scores, 7 / 15)["auprc"] or 0.0
+    if target_id == "deterioration_24h":
+        baseline_name = "news2"
+        baseline_scores = [
+            news2_score({f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)})[0]
+            / 15
+            for row in rows
+        ]
+    else:
+        # readmission 基线 = LACE（WBS T8.3，Ruling R-P8-6）。
+        baseline_name = "lace"
+        from scripts.baselines import lace_score
+        from scripts.evaluate_model import payload_from_row
+
+        try:
+            baseline_scores = [float(lace_score(payload_from_row(row))) for row in rows]
+        except ValueError as exc:
+            raise SystemExit(f"promotion gate rejected: {exc}") from exc
+    baseline_auprc = binary_metrics(labels, baseline_scores, 7 / 15)["auprc"] or 0.0
     ece = binary_metrics(labels, scores, engine.thresholds["high"])["ece"]
     report = {
-        "passed": bool(lo >= news2_auprc and ece is not None and ece < 0.05),
+        "passed": bool(lo >= baseline_auprc and ece is not None and ece < 0.05),
         "auprc_ci": {"point": point, "lo": lo, "hi": hi, "n": 1000, "seed": 20260928},
-        "news2_auprc": news2_auprc,
+        "baseline": baseline_name,
+        "baseline_auprc": baseline_auprc,
         "ece": ece,
-        "gate": {"rule": "auprc_ci.lo >= news2_auprc and ece < 0.05", "max_ece": 0.05},
+        "gate": {
+            "rule": f"auprc_ci.lo >= baseline_auprc({baseline_name}) and ece < 0.05",
+            "max_ece": 0.05,
+        },
     }
     if not report["passed"]:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         raise SystemExit(
-            f"promotion gate rejected: auprc CI lo {lo:.4f} vs news2 {news2_auprc:.4f}; "
-            f"ece {None if ece is None else round(ece, 4)} (need < 0.05)"
+            f"promotion gate rejected: auprc CI lo {lo:.4f} vs {baseline_name} "
+            f"{baseline_auprc:.4f}; ece {None if ece is None else round(ece, 4)} "
+            "(need < 0.05)"
         )
     return report
 

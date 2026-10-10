@@ -150,5 +150,113 @@ def test_promote_gate_accepts_and_records_eval(tmp_path):
     report = json.loads(eval_path.read_text(encoding="utf-8"))
     assert report["passed"] is True
     assert report["ece"] < 0.05
-    assert report["auprc_ci"]["lo"] >= report["news2_auprc"]
+    assert report["auprc_ci"]["lo"] >= report["baseline_auprc"]
+    assert report["baseline"] == "news2"
+    assert (registry / "manifest.json").exists()
+
+
+def _write_lace_rows(csv_path: Path, invert_labels: bool) -> None:
+    """24 行出院留出集：连续 comorbidity 决定标签（LACE 的分箱在此损失排序信息）。"""
+    header = (
+        "los_days,prior_utilization_12m,comorbidity_index,ed_visits_6m,"
+        "diagnosis_codes,discharge_destination,label"
+    )
+    lines = [header]
+    for i in range(24):
+        comorbidity = round(0.25 * i, 2)  # 0.00..5.75 连续
+        label = int(comorbidity >= 3.0) ^ (1 if invert_labels else 0)
+        lines.append(f"2.0,0,{comorbidity},0,[],home,{label}")
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_lace_artifact(path: Path, version: str) -> None:
+    """逻辑回归在连续 comorbidity 上两点定线：c≥3 → p≈0.99、c=0 → p≈0.02。"""
+    from app.features import READMISSION_FEATURES
+
+    weights = {feature: 0.0 for feature in READMISSION_FEATURES}
+    weights["comorbidity_index"] = 6.0
+    path.write_text(
+        json.dumps(
+            {
+                "model_version": version,
+                "target_id": "readmission_30d",
+                "algorithm": "logistic_regression_sklearn",
+                "feature_names": READMISSION_FEATURES,
+                "feature_order": READMISSION_FEATURES,
+                "preprocess": {
+                    feature: {"median": 0.0, "mean": 0.0, "std": 1.0}
+                    for feature in READMISSION_FEATURES
+                },
+                "calibration": None,
+                "weights": weights,
+                "bias": -17.9,
+                "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_promote_gate_readmission_rejects_worse_than_lace(tmp_path):
+    import pytest
+
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "bad-readmission.json"
+    holdout = tmp_path / "lace-holdout.csv"
+    _write_lace_artifact(artifact, "rm-bad-v1")
+    _write_lace_rows(holdout, invert_labels=True)
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "readmission_30d",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        with pytest.raises(SystemExit):
+            manage_main()
+    finally:
+        sys.argv = old_argv
+    assert not (registry / "manifest.json").exists()
+
+
+def test_promote_gate_readmission_accepts_and_records_eval(tmp_path):
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "good-readmission.json"
+    holdout = tmp_path / "lace-holdout.csv"
+    _write_lace_artifact(artifact, "rm-good-v1")
+    _write_lace_rows(holdout, invert_labels=False)
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "readmission_30d",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        manage_main()
+    finally:
+        sys.argv = old_argv
+    eval_path = registry / "readmission_30d" / "rm-good-v1" / "eval.json"
+    report = json.loads(eval_path.read_text(encoding="utf-8"))
+    assert report["passed"] is True
+    assert report["ece"] < 0.05
+    assert report["auprc_ci"]["lo"] >= report["baseline_auprc"]
+    assert report["baseline"] == "lace"
     assert (registry / "manifest.json").exists()

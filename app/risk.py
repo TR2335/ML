@@ -245,13 +245,28 @@ class RiskEngine:
     def _score(self, event: ClinicalEvent) -> RiskScore:
         payload = event.payload
         feature_order = self.feature_order
-        missing_features = [feature for feature in feature_order if payload.get(feature) is None]
+        # 指示列（X__missing）永不计入 missing_features（Plan Ruling R2）。
+        missing_features = [
+            feature
+            for feature in feature_order
+            if payload.get(feature) is None
+            and not (feature.endswith("__missing") and feature[: -len("__missing")] in FEATURES)
+        ]
         contributions: list[tuple[str, float, float | None]] = []
         linear = self.bias
         if self.preprocess is not None:
             for name in feature_order:
                 stats = self.preprocess[name]
                 raw = payload.get(name)
+                base_name = name[: -len("__missing")] if name.endswith("__missing") else None
+                if base_name is not None and base_name in FEATURES:
+                    # 指示列由 serving 即时计算（Plan Ruling R2）：基特征缺失 → 1.0。
+                    value = 0.0 if payload.get(base_name) is not None else 1.0
+                    std = stats["std"] if stats["std"] > 0 else 1.0
+                    contribution = self.weights.get(name, 0.0) * (value - stats["mean"]) / std
+                    linear += contribution
+                    contributions.append((name, contribution, value))
+                    continue
                 # Plan Ruling R10: imputed features still count as missing.
                 value = stats["median"] if raw is None else float(raw)
                 std = stats["std"] if stats["std"] > 0 else 1.0

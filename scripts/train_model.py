@@ -1,197 +1,214 @@
-"""Train the demo logistic model without a heavyweight ML runtime.
+"""Train the demo logistic model with scikit-learn (P6).
 
-The production pipeline should replace this script with a governed training job,
-but the same artifact shape is intentionally kept stable for the serving layer.
+Data comes from the same synthetic pipeline the demo/import paths use
+(P5 T5.1); serving stays dependency-free because the artifact carries
+its own preprocess block (T5.3 v2).
 """
 
 import argparse
 import json
 import math
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from random import Random
 
-# 直接以 `python scripts/x.py` 运行时根目录不在 sys.path，补一次以便跨 scripts 导入。
+# 直接以 `python scripts/x.py` 运行时根目录不在 sys.path（Ruling R14）。
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-FEATURES = [
-    "age",
-    "heart_rate",
-    "respiratory_rate",
-    "systolic_bp",
-    "temperature",
-    "spo2",
-    "wbc",
-    "creatinine",
-    "lactate",
-    "prior_admissions_30d",
+import numpy as np
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
+from app.domain import ClinicalEvent
+from app.synthetic import FEATURES, demo_patients_with_outcomes
+from scripts.baselines import news2_score
+from scripts.derive_labels import _latest_payload_before, demo_index_times, derive_labels
+from scripts.validate import rolling_time_split
+
+FEATURES_V2 = [
+    *FEATURES,
+    *[f"{feature}__missing" for feature in FEATURES],
+    "news2_score",
 ]
-BASE_WEIGHTS = [0.012, 0.028, 0.09, -0.035, 0.55, -0.11, 0.11, 0.34, 0.44, 0.35]
-READMISSION_WEIGHTS = [0.018, 0.006, 0.01, -0.006, 0.02, -0.012, 0.02, 0.12, 0.06, 0.9]
-TARGET_CONFIG = {
-    "deterioration_24h": {
-        "weights": BASE_WEIGHTS,
-        "bias": -7.1,
-        "news2_weight": 0.06,
-        "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
-    },
-    "readmission_30d": {
-        "weights": READMISSION_WEIGHTS,
-        "bias": -3.0,
-        "news2_weight": 0.02,
-        "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
-    },
+
+TARGET_THRESHOLDS = {
+    "deterioration_24h": {"medium": 0.2, "high": 0.45, "critical": 0.75},
+    "readmission_30d": {"medium": 0.15, "high": 0.3, "critical": 0.55},
 }
-
-FEATURE_ORDER_V2 = [*FEATURES, "news2_score"]
-
-
-def transform(row: list[float]) -> list[float]:
-    (
-        age,
-        heart_rate,
-        respiratory_rate,
-        systolic_bp,
-        temperature,
-        spo2,
-        wbc,
-        creatinine,
-        lactate,
-        prior,
-    ) = row
-    return [
-        max(age - 50, 0),
-        heart_rate,
-        respiratory_rate,
-        systolic_bp - 120,
-        abs(temperature - 37.0),
-        spo2 - 96,
-        wbc,
-        creatinine,
-        lactate,
-        prior,
-    ]
+READMISSION_DISCHARGE_HOURS = 72
+READMISSION_POSITIVE_RATE = 0.08
 
 
-def column_stats(rows: list[list[float]]) -> list[dict]:
-    """Median/mean/std per raw column (population std; zero std guarded to 1)."""
-    stats = []
-    for column in zip(*rows):
-        ordered = sorted(column)
-        count = len(ordered)
-        mean = sum(ordered) / count
-        variance = sum((value - mean) ** 2 for value in ordered) / count
-        median = (
-            ordered[count // 2]
-            if count % 2
-            else (ordered[count // 2 - 1] + ordered[count // 2]) / 2
-        )
-        std = math.sqrt(variance) or 1.0
-        stats.append({"median": median, "mean": mean, "std": std})
-    return stats
+def _features_before(payload: dict) -> list[float]:
+    base = [float(payload[f]) if payload.get(f) is not None else math.nan for f in FEATURES]
+    indicators = [1.0 if math.isnan(value) else 0.0 for value in base]
+    present = {k: v for k, v in payload.items() if v is not None}
+    news2 = float(news2_score(present)[0]) if present else math.nan
+    return [*base, *indicators, news2]
 
 
-def sigmoid(value: float) -> float:
-    return 1 / (1 + math.exp(-max(min(value, 30), -30)))
-
-
-def make_row(rng: Random, target_id: str) -> tuple[list[float], float, int]:
-    row = [
-        rng.uniform(18, 95),
-        rng.uniform(55, 150),
-        rng.uniform(10, 40),
-        rng.uniform(70, 165),
-        rng.uniform(35.5, 40),
-        rng.uniform(82, 100),
-        rng.uniform(2, 25),
-        rng.uniform(0.4, 4.5),
-        rng.uniform(0.4, 6),
-        rng.uniform(0, 4),
-    ]
-    from scripts.baselines import news2_score
-
-    transformed = transform(row)
-    config = TARGET_CONFIG[target_id]
-    total, _ = news2_score(dict(zip(FEATURES, row)))
-    latent = (
-        config["bias"]
-        + sum(weight * value for weight, value in zip(config["weights"], transformed))
-        + config["news2_weight"] * total
+def build_demo_dataset(
+    target_id: str, target_rows: int
+) -> tuple[list[dict], list[list[float]], list[int]]:
+    """T5.1 同源管道生成 (index_time 行, 21 维特征, 标签)（Plan Ruling R3/R9）。"""
+    # readmission 每就诊一个出院 landmark，行数即就诊数（入账裁定）。
+    patients = max(
+        18, target_rows if target_id == "readmission_30d" else math.ceil(target_rows / 96)
     )
-    probability = sigmoid(latent)
-    return row, float(total), int(rng.random() < probability)
-
-
-def train(
-    rows: list[list[float]], labels: list[int], epochs: int = 900, learning_rate: float = 0.004
-) -> tuple[float, list[float]]:
-    weights = [0.0] * len(rows[0])  # 宽度由向量决定（v2 为 11 维：10 体征 + news2）
-    bias = 0.0
-    for _ in range(epochs):
-        grad_w = [0.0] * len(weights)
-        grad_b = 0.0
-        for row, label in zip(rows, labels):
-            features = row  # 调用方传入已标准化的行（v2：z 分数空间训练）
-            prediction = sigmoid(
-                bias + sum(weight * value for weight, value in zip(weights, features))
+    _, events, outcomes = demo_patients_with_outcomes(count=patients, seed=7)
+    if target_id == "deterioration_24h":
+        index_times = demo_index_times(events)
+        labeled = derive_labels(events, outcomes, index_times, horizon_hours=24)
+    else:
+        first_seen: dict[str, datetime] = {}
+        for event in sorted(events, key=lambda item: item.occurred_at):
+            first_seen.setdefault(event.encounter_id, event.occurred_at)
+        # derive_labels 要求 list[tuple[str, datetime]]（Plan 草稿的 dict 形式已改，入账）。
+        # 所有 demo 就诊首事件同刻——按就诊序号加 0..6 天 LOS 抖动，产生 >=4 个不同
+        # 时间戳供 rolling_time_split 使用（入账裁定）。
+        index_times = [
+            (
+                encounter_id,
+                at
+                + timedelta(hours=READMISSION_DISCHARGE_HOURS)
+                + timedelta(days=int(encounter_id.split("-")[1]) % 7),
             )
-            error = prediction - label
-            grad_b += error
-            for index, value in enumerate(features):
-                grad_w[index] += error * value
-        scale = learning_rate / max(len(rows), 1)
-        bias -= scale * grad_b
-        weights = [weight - scale * gradient for weight, gradient in zip(weights, grad_w)]
-    return bias, weights
+            for encounter_id, at in first_seen.items()
+        ]
+        rng = Random(42)
+        readmissions = [
+            {
+                "encounter_id": encounter_id,
+                "occurred_at": (at + timedelta(days=2 + rng.randrange(27))).isoformat(),
+                "outcome_type": "unplanned_readmission",
+            }
+            for encounter_id, at in first_seen.items()
+            if rng.random() < READMISSION_POSITIVE_RATE
+        ]
+        labeled = derive_labels(events, readmissions, index_times, horizon_hours=720)
+    events_by_encounter: dict[str, list[ClinicalEvent]] = {}
+    for event in events:
+        events_by_encounter.setdefault(event.encounter_id, []).append(event)
+    rows: list[dict] = []
+    matrix: list[list[float]] = []
+    labels: list[int] = []
+    for item in labeled:
+        payload = _latest_payload_before(
+            events_by_encounter.get(item.encounter_id, []), item.encounter_id, item.index_time
+        )
+        rows.append({"index_time": item.index_time.isoformat()})
+        matrix.append(_features_before(payload))
+        labels.append(item.label)
+    return rows, matrix, labels
+
+
+def _fit_pipeline(
+    times: list[dict], matrix: list[list[float]], labels: list[int]
+) -> tuple[Pipeline, float]:
+    """C 网格 × rolling_time_split 时间交叉验证，按平均 AUPRC 选（WBS T6.1）。"""
+    from scripts.evaluate_model import binary_metrics
+
+    fold_rows = [
+        {"index_time": t["index_time"], "_i": i, "label": str(labels[i])}
+        for i, t in enumerate(times)
+    ]
+    folds = rolling_time_split(fold_rows, 3)
+
+    def make_pipeline(c: float) -> Pipeline:
+        return Pipeline(
+            [
+                # keep_empty_features：全空列不丢，保 21 维对齐（R2 关键）
+                ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
+                ("scale", StandardScaler()),
+                (
+                    "clf",
+                    # sklearn>=1.8 弃用显式 penalty；默认即 L2。
+                    LogisticRegression(C=c, class_weight="balanced", max_iter=1000),
+                ),
+            ]
+        )
+
+    # C 选择的 CV 跑在全量行上（最终模型仍只 fit train 60%，R4 留校准/验证段）。
+    c_grid = (0.01, 0.1, 1.0)
+    best_c, best_score = c_grid[0], -1.0
+    matrix_array = np.asarray(matrix, dtype=float)
+    labels_array = np.asarray(labels, dtype=int)
+    for c in c_grid:
+        scores = []
+        for train_rows, test_rows in folds:
+            train_idx = [row["_i"] for row in train_rows]
+            test_idx = [row["_i"] for row in test_rows]
+            train_labels = [labels[i] for i in train_idx]
+            if len(set(train_labels)) < 2:
+                # 早期时间窗可能全阴性（demo 阳性集中在 25-48h）——单类无法拟合，
+                # 跳过该折（入账裁定）。
+                continue
+            pipe = make_pipeline(c)
+            pipe.fit(matrix_array[train_idx], labels_array[train_idx])
+            pred = pipe.predict_proba(matrix_array[test_idx])[:, 1]
+            test_labels = [labels[i] for i in test_idx]
+            value = binary_metrics(test_labels, list(map(float, pred)), 0.5)["auprc"]
+            scores.append(value or 0.0)
+        if not scores:
+            continue
+        mean_auprc = sum(scores) / len(scores)
+        if mean_auprc > best_score + 1e-12:
+            best_c, best_score = c, mean_auprc
+    return make_pipeline(best_c), best_c
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="data/model.json")
-    parser.add_argument("--rows", type=int, default=2500)
-    parser.add_argument("--version", default="baseline-logistic-v1")
+    parser.add_argument("--rows", type=int, default=2500, help="目标训练行数（Ruling R9）")
+    parser.add_argument("--version", default="baseline-logistic-sklearn-v1")
     parser.add_argument(
-        "--target-id", choices=["deterioration_24h", "readmission_30d"], default="deterioration_24h"
+        "--target-id",
+        choices=["deterioration_24h", "readmission_30d"],
+        default="deterioration_24h",
     )
     args = parser.parse_args()
-    rng = Random(42)
-    generated = [make_row(rng, args.target_id) for _ in range(args.rows)]
-    raw_rows = [item[0] for item in generated]
-    news2_values = [item[1] for item in generated]
-    labels = [item[2] for item in generated]
-    stats = column_stats([row + [news2] for row, news2 in zip(raw_rows, news2_values)])
-    vectors = [
-        [(value - column["mean"]) / column["std"] for value, column in zip([*row, news2], stats)]
-        for row, news2 in zip(raw_rows, news2_values)
-    ]
-    bias, weights = train(vectors, labels)
+    times, matrix, labels = build_demo_dataset(args.target_id, args.rows)
+    order = sorted(range(len(times)), key=lambda i: times[i]["index_time"])
+    n = len(order)
+    train_idx = order[: int(n * 0.6)]
+    x = np.asarray(matrix, dtype=float)
+    y = np.asarray(labels, dtype=int)
+    pipeline, best_c = _fit_pipeline(times, matrix, labels)
+    pipeline.fit(x[train_idx], y[train_idx])
+    imputer = pipeline.named_steps["impute"]
+    scaler = pipeline.named_steps["scale"]
+    clf = pipeline.named_steps["clf"]
     artifact = {
         "model_version": args.version,
         "target_id": args.target_id,
-        "algorithm": "logistic_regression_gradient_descent",
-        "feature_names": FEATURE_ORDER_V2,
-        "feature_order": FEATURE_ORDER_V2,
+        "algorithm": "logistic_regression_sklearn",
+        "feature_names": FEATURES_V2,
+        "feature_order": FEATURES_V2,
         "preprocess": {
-            feature: {
-                "median": round(entry["median"], 8),
-                "mean": round(entry["mean"], 8),
-                "std": round(entry["std"], 8),
+            name: {
+                "median": float(imputer.statistics_[i]),
+                "mean": float(scaler.mean_[i]),
+                "std": float(scaler.scale_[i]) or 1.0,
             }
-            for feature, entry in zip(FEATURE_ORDER_V2, stats)
+            for i, name in enumerate(FEATURES_V2)
         },
-        "bias": round(bias, 8),
-        "weights": {
-            feature: round(weight, 8) for feature, weight in zip(FEATURE_ORDER_V2, weights)
-        },
-        "training_rows": args.rows,
+        "calibration": None,  # T6.2 填充
+        "bias": float(clf.intercept_[0]),
+        "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(FEATURES_V2)},
+        "training_rows": len(y),
+        "best_C": best_c,
         "label_definition": f"synthetic_{args.target_id}",
-        "thresholds": TARGET_CONFIG[args.target_id]["thresholds"],
+        "thresholds": TARGET_THRESHOLDS[args.target_id],
     }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"wrote {output} ({args.version})")
+    print(f"wrote {output} ({args.version}, C={best_c}, rows={len(y)})")
 
 
 if __name__ == "__main__":

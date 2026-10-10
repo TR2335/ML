@@ -41,7 +41,7 @@ POSTGRES_PASSWORD=local docker compose up --build
 & .\.venv\Scripts\pytest
 ```
 
-训练脚本使用纯 Python 梯度下降生成两个独立目标的演示模型（`data/model.json` 和 `data/readmission_model.json`），方便在没有 GPU 或科学计算环境的情况下演示完整的训练到服务流程；真实项目应把它替换为经过审批的训练流水线。真实数据导入和指标验证命令见 `docs/readiness-review.md`。
+训练脚本使用 scikit-learn 逻辑回归管线（中位数填补 → 标准化 → L2、`class_weight=balanced`，C∈{0.01,0.1,1} 按时间交叉验证 AUPRC 选取）生成两个独立目标的工件（`data/model.json` 和 `data/readmission_model.json`）；训练数据与演示/导入同源（合成患者 → 标签派生管道）。scikit-learn 仅是训练/评估依赖（`pip install -e ".[dev]"` 或 `".[train]"`），serving 保持纯标准库。真实数据导入和指标验证命令见 `docs/readiness-review.md`。
 
 准备面试时从 [`docs/interview-guide.md`](docs/interview-guide.md) 开始。它包含 30 秒/3 分钟项目介绍、完整请求链路、模型指标、Redis 与一致性、医疗安全边界、20 个高频追问和七天训练计划。
 
@@ -92,7 +92,7 @@ scripts/
   generate_demo_data.py
   import_clinical_data.py  真实数据导入与单事务校验
   manage_model.py    模型 promote、SHA-256 清单与 rollback
-  train_model.py     纯 Python 梯度下降训练脚本
+  train_model.py     scikit-learn 逻辑回归训练脚本
   validate.py        滚动时间切分与 bootstrap CI
 docs/
   architecture.md    企业架构和演进路线

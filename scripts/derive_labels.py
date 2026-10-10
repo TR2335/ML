@@ -14,7 +14,9 @@ from pathlib import Path
 from app.domain import ClinicalEvent
 from app.synthetic import FEATURES, demo_patients_with_outcomes
 
-OUTCOME_TYPES = frozenset({"rrt", "unplanned_icu_transfer", "cardiac_arrest", "death"})
+OUTCOME_TYPES = frozenset(
+    {"rrt", "unplanned_icu_transfer", "cardiac_arrest", "death", "unplanned_readmission"}
+)
 DEMO_INDEX_HOURS = range(1, 97)
 
 

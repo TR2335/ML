@@ -262,3 +262,175 @@ def test_recent_scores_and_band_share_gauges(tmp_path):
         text = client.get("/api/metrics").text
     assert "medintel_band_share" in text
     assert "medintel_missing_rate" in text
+
+
+def test_compute_ks_hand_computed():
+    from scripts.monitor_drift import compute_ks
+
+    # Fa over [1,2,3,4] vs Fb over [2.5,3.5,4.5,5]：max|Fa−Fb| = 0.5（区间 [2.5,3)）
+    assert compute_ks([1, 2, 3, 4], [2.5, 3.5, 4.5, 5.0]) == 0.5
+    assert compute_ks([1, 2, 3], [1, 2, 3]) == 0.0  # 同分布
+    assert compute_ks([1, 2, 3], [7, 8, 9]) == 1.0  # 完全分离
+    assert compute_ks([1, 1, 2, 2], [1, 2]) == 0.0  # 平局重复值
+
+
+def test_compute_ks_skips_when_reference_missing():
+    from scripts.monitor_drift import compute_ks
+
+    assert compute_ks(None, [1, 2]) is None
+    assert compute_ks([], [1, 2]) is None
+    assert compute_ks([1, 2], []) is None
+    assert compute_ks([1, 2], ["", None, "not-a-number"]) is None  # 全无效 → None
+
+
+def test_drift_alert_truth_table():
+    from scripts.monitor_drift import PSI_THRESHOLD, drift_alert
+
+    assert drift_alert(0.3, None) is True  # psi 高独立触发（ks 不可用不阻断）
+    assert drift_alert(0.1, 0.05) is False  # 双低
+    assert drift_alert(0.1, 0.2) is True  # psi 低但 ks 高 → OR 触发
+    assert drift_alert(0.1, 0.2, ks_threshold=0.3) is False  # 阈值可调
+    assert drift_alert(PSI_THRESHOLD, None) is False  # 恰等阈值不触发（> 严格）
+    assert drift_alert(0.1, None) is False  # 无 ks 不误报
+
+
+def _drift_artifact(path, sample):
+    path.write_text(
+        json.dumps(
+            {
+                "model_version": "ks-v1",
+                "target_id": "deterioration_24h",
+                "feature_names": ["heart_rate"],
+                "feature_order": ["heart_rate"],
+                "weights": {"heart_rate": 1.0},
+                "bias": -1.0,
+                "thresholds": {"medium": 0.2, "high": 0.45, "critical": 0.75},
+                "drift_reference": {
+                    "heart_rate": {
+                        "lo": 50.0,
+                        "hi": 150.0,
+                        "proportions": [0.1] * 10,
+                        "missing_rate": 0.0,
+                        "sample": sample,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_monitor_drift_cli_reports_ks(tmp_path):
+    import pytest
+
+    from scripts.monitor_drift import main as monitor_main
+
+    artifact = tmp_path / "model.json"
+    reference_sample = list(range(50, 150))  # 100 个值，与 10 箱均匀参考一致
+    _drift_artifact(artifact, reference_sample)
+
+    # 稳定输入（与参考同源）→ ks≈0、psi 低 → exit 0
+    stable = tmp_path / "stable.csv"
+    stable.write_text(
+        "heart_rate,label\n" + "\n".join(f"{v},0" for v in reference_sample) + "\n",
+        encoding="utf-8",
+    )
+    old_argv = sys.argv
+    sys.argv = ["monitor_drift.py", "--artifact", str(artifact), "--input", str(stable)]
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            monitor_main()
+    finally:
+        sys.argv = old_argv
+    assert excinfo.value.code == 0
+
+    # 剧偏输入（全部 > 参考上界）→ ks=1.0 > 0.1 → exit 1
+    shifted = tmp_path / "shifted.csv"
+    shifted.write_text(
+        "heart_rate,label\n" + "\n".join(f"{200 + i},0" for i in range(60)) + "\n",
+        encoding="utf-8",
+    )
+    sys.argv = ["monitor_drift.py", "--artifact", str(artifact), "--input", str(shifted)]
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            monitor_main()
+    finally:
+        sys.argv = old_argv
+    assert excinfo.value.code == 1
+
+
+def test_monitor_drift_legacy_artifact_without_sample(tmp_path):
+    """旧工件无 sample → ks=None + reason，不误报（向后兼容，exit 由 psi 决定）。"""
+    import pytest
+
+    from scripts.monitor_drift import main as monitor_main
+
+    artifact = tmp_path / "model.json"
+    _drift_artifact(artifact, [])
+    artifact.write_text(
+        json.dumps(
+            {
+                **json.loads(artifact.read_text(encoding="utf-8")),
+                "drift_reference": {
+                    "heart_rate": {
+                        "lo": 50.0,
+                        "hi": 150.0,
+                        "proportions": [0.1] * 10,
+                        "missing_rate": 0.0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    stable = tmp_path / "rows.csv"
+    lines = ["heart_rate,label"] + [f"{50 + i % 100},{i % 2}" for i in range(100)]
+    stable.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    old_argv = sys.argv
+    sys.argv = ["monitor_drift.py", "--artifact", str(artifact), "--input", str(stable)]
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            monitor_main()
+    finally:
+        sys.argv = old_argv
+    assert excinfo.value.code == 0  # 无 sample 且 psi 低 → 不告警
+
+
+def test_drift_reference_includes_reference_sample(tmp_path):
+    """训练写入确定性参考样本（≤2000/特征，R-RS-13）：KS 检验的数据源。"""
+    from scripts.train_model import main as train_main
+
+    def train(output):
+        old_argv = sys.argv
+        sys.argv = [
+            "train_model.py",
+            "--output",
+            str(output),
+            "--rows",
+            "800",
+            "--target-id",
+            "deterioration_24h",
+            "--version",
+            "ks-ref-v1",
+        ]
+        try:
+            import contextlib
+            import io
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                train_main()
+        finally:
+            sys.argv = old_argv
+
+    first = tmp_path / "a.json"
+    second = tmp_path / "b.json"
+    train(first)
+    train(second)
+    ref_a = json.loads(first.read_text(encoding="utf-8"))["drift_reference"]
+    ref_b = json.loads(second.read_text(encoding="utf-8"))["drift_reference"]
+    assert ref_a == ref_b  # 确定性
+    assert ref_a
+    for name, entry in ref_a.items():
+        assert "sample" in entry, name
+        assert 0 < len(entry["sample"]) <= 2000, name
+        assert all(isinstance(value, (int, float)) for value in entry["sample"]), name

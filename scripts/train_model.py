@@ -330,8 +330,16 @@ def _serialize_trees(booster) -> list[dict]:
     return trees
 
 
-def _drift_reference(matrix: list[list[float]], names: list[str]) -> dict:
-    """每特征 lo/hi + 10 等宽箱占比 + 缺失率（Ruling R-P7-9）。"""
+def _drift_reference(
+    matrix: list[list[float]],
+    names: list[str],
+    *,
+    sample_size: int = 2000,
+    seed: int = 20261010,
+) -> dict:
+    """每特征 lo/hi + 10 等宽箱占比 + 缺失率 + ≤sample_size 确定性参考样本（Ruling
+    R-P7-9 + G4 KS 数据源；样本上限 2000——spec 5000 的工件体积修正，R-RS-13）。"""
+    rng = Random(seed)
     reference: dict[str, dict] = {}
     for col, name in enumerate(names):
         values = [row[col] for row in matrix]
@@ -348,11 +356,13 @@ def _drift_reference(matrix: list[list[float]], names: list[str]) -> dict:
             else:
                 counts[min(int((value - lo) / width), 9)] += 1
         total = max(len(values), 1)
+        sample = rng.sample(finite, sample_size) if len(finite) > sample_size else list(finite)
         reference[name] = {
             "lo": lo,
             "hi": hi,
             "proportions": [c / total for c in counts],
             "missing_rate": missing / total,
+            "sample": sample,
         }
     return reference
 

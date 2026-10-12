@@ -74,6 +74,7 @@
 - 演练 promote 的 C 选择 CV 见过 holdout 标签（沿用 P6 R4 既有行为，isotonic/fit 仍只用前 80%）。
 - 演练失败路径可读到上次成功的 `eval.json`/`cohort_stats.json`（陈旧产物）；总 `passed` 由 `steps_ok` 兜底仍为 False，仅报告字段失真（终审 M2，修复成本=run 起始清理或 mtime 校验）。
 - `_drift_reference` 的 lo/hi/proportions 仍按全量矩阵计算（含尾 20% 段）；`sample` 抽样 seed 已接 `--seed`（终审 M1 的 seed 半边已修，train-段口径待裁定）。
+- 复核新增（均不阻断）：①超时/中止路径不覆写 `rehearsal_report.json`——磁盘留有上次成功报告时机器消费者可能读到陈旧 `passed=True`（并入陈旧产物 M2 条目；stderr 已在中止前打印落盘控制台）；②fit 窗计数按 `time <= fit_cutoff` 把边界时刻行计入 in_fit（25k 实测全局 +1/18750=0.005%，纯披露字段、恒等式成立）；③`fit_window` 隐含"报告输入==训练数据"假设——对独立 holdout 跑报告卡时 cutoff 会误描述真实 fit 窗（note 可补 "assumes this input is the training dataset"）。
 
 ## 终审与修复轮（2026-10-12）
 

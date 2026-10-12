@@ -103,6 +103,9 @@ def run(args: argparse.Namespace) -> dict:
             stderr = exc.stderr or ""
             if isinstance(stderr, bytes):
                 stderr = stderr.decode("utf-8", errors="replace")
+            # 中止前把 stderr 尾部落到控制台（复核 R2：报告不覆写，stderr 不能也丢）
+            if stderr:
+                print(f"scale_rehearsal: {name} stderr tail:\n{stderr[-2000:]}", file=sys.stderr)
             steps.append(
                 {
                     "name": name,

@@ -11,6 +11,8 @@ model-registry/
 .venv/
 data/*.json
 data/*.db
+data/*.db-shm
+data/*.db-wal
 mlruns/
 dist/
 build/

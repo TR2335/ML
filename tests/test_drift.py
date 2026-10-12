@@ -434,3 +434,74 @@ def test_drift_reference_includes_reference_sample(tmp_path):
         assert "sample" in entry, name
         assert 0 < len(entry["sample"]) <= 2000, name
         assert all(isinstance(value, (int, float)) for value in entry["sample"]), name
+
+
+def test_monitor_drift_derives_readmission_features_from_source_columns(tmp_path):
+    """输入 CSV 只有出院源字段（无派生列）→ monitor 即时编码，不全 missing 误报（R-RS-15）。"""
+    import pytest
+
+    from app.features import READMISSION_FEATURES
+    from scripts.monitor_drift import main as monitor_main
+
+    artifact = tmp_path / "model.json"
+    # 参考分布：两派生特征取值 0..3 均匀（10 箱下命中箱 0/3/6/9）
+    uniform = [0.25, 0.0, 0.0, 0.25, 0.0, 0.0, 0.25, 0.0, 0.0, 0.25]
+    artifact.write_text(
+        json.dumps(
+            {
+                "model_version": "derive-v1",
+                "target_id": "readmission_30d",
+                "feature_names": list(READMISSION_FEATURES),
+                "feature_order": list(READMISSION_FEATURES),
+                "weights": {name: 0.0 for name in READMISSION_FEATURES},
+                "bias": -1.0,
+                "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
+                "drift_reference": {
+                    "diagnosis_code_count": {
+                        "lo": 0.0,
+                        "hi": 3.0,
+                        "proportions": uniform,
+                        "missing_rate": 0.0,
+                    },
+                    "discharge_destination_code": {
+                        "lo": 0.0,
+                        "hi": 3.0,
+                        "proportions": uniform,
+                        "missing_rate": 0.0,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    import csv as csv_module
+    from io import StringIO
+
+    destinations = ["home", "home_health", "snf", "other"]
+    buffer = StringIO()
+    writer = csv_module.writer(buffer)
+    writer.writerow(
+        [
+            "encounter_id",
+            "los_days",
+            "prior_utilization_12m",
+            "comorbidity_index",
+            "ed_visits_6m",
+            "diagnosis_codes",
+            "discharge_destination",
+            "label",
+        ]
+    )
+    for i in range(80):
+        codes = json.dumps([f"D{j:02d}" for j in range(i % 4)])
+        writer.writerow([f"enc-{i + 1:04d}", 2.0, 1, 1.5, 0, codes, destinations[i % 4], 0])
+    batch = tmp_path / "batch.csv"
+    batch.write_text(buffer.getvalue(), encoding="utf-8")
+    old_argv = sys.argv
+    sys.argv = ["monitor_drift.py", "--artifact", str(artifact), "--input", str(batch)]
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            monitor_main()
+    finally:
+        sys.argv = old_argv
+    assert excinfo.value.code == 0  # 派生后同分布 → 不告警（旧行为：missing 爆表 exit 1）

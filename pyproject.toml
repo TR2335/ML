@@ -45,6 +45,7 @@ pythonpath = ["."]
 addopts = "-p no:cacheprovider -m 'not integration'"
 markers = [
     "integration: requires docker compose --profile future-infra (PostgreSQL/Redis); run with -m integration",
+    "slow: long-running end-to-end runs (scale rehearsal smoke); kept in default CI per spec",
 ]
 
 [tool.ruff]

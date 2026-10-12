@@ -11,6 +11,8 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from app.features import READMISSION_FEATURES, encode_readmission_payload
+
 PSI_THRESHOLD = 0.2  # WBS T7.4
 KS_THRESHOLD = 0.1  # G4：效应量阈值（不看 p 值——大样本 p 必然显著，R-RS-14）
 
@@ -60,6 +62,21 @@ def compute_ks(reference_sample: list | None, values: list) -> float | None:
 def drift_alert(psi: float, ks: float | None, ks_threshold: float = KS_THRESHOLD) -> bool:
     """双指标告警：psi > 0.2 OR ks > 阈值；ks 不可用（None）不阻断。"""
     return psi > PSI_THRESHOLD or (ks is not None and ks > ks_threshold)
+
+
+def _feature_column(feature: str, rows: list[dict]) -> list:
+    """特征列取值：输入含该列直取；readmission 派生特征缺列时按源字段即时编码
+    （serving R2 同语义——漂移输入可以是出院快照源字段 CSV，R-RS-15）。"""
+    if feature in rows[0]:
+        return [row.get(feature, "") for row in rows]
+    if feature in READMISSION_FEATURES:
+        lookup = {name: index for index, name in enumerate(READMISSION_FEATURES)}
+        column: list = []
+        for row in rows:
+            value = encode_readmission_payload(row)[lookup[feature]]
+            column.append("" if math.isnan(value) else value)
+        return column
+    return [row.get(feature, "") for row in rows]
 
 
 def compute_psi(reference: dict, values: list, bins: int = 10) -> float:
@@ -120,7 +137,7 @@ def main() -> None:
     for feature in artifact.get("feature_order", list(reference.keys())):
         if feature not in reference:
             continue
-        column = [row.get(feature, "") for row in rows]
+        column = _feature_column(feature, rows)
         psi = compute_psi(reference[feature], column)
         sample = reference[feature].get("sample")
         ks = compute_ks(sample, column)

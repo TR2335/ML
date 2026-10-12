@@ -29,6 +29,7 @@ from app.synthetic import FEATURES
 from scripts.baselines import news2_score
 from scripts.evaluate_model import binary_metrics, evaluate_rows, resolve_group_column
 from scripts.validate import (
+    bootstrap_budget,
     bootstrap_metric,
     decision_curve_mean_gain,
     per_facility_auprc,
@@ -129,7 +130,10 @@ def run_promotion_gate(
     def auprc_metric(lab: list[int], sco: list[float]) -> float:
         return binary_metrics(lab, sco, engine.thresholds["high"])["auprc"] or 0.0
 
-    point, lo, hi = bootstrap_metric(labels, scores, auprc_metric, n=1000, seed=20260928)
+    n_boot, max_rows = bootstrap_budget(len(labels))
+    point, lo, hi = bootstrap_metric(
+        labels, scores, auprc_metric, n=n_boot, seed=20260928, max_rows=max_rows
+    )
     if target_id == "deterioration_24h":
         baseline_name = "news2"
         baseline_scores = [
@@ -181,7 +185,14 @@ def run_promotion_gate(
         ),
         "split_mode": split_mode,
         "group_column": gate_group,
-        "auprc_ci": {"point": point, "lo": lo, "hi": hi, "n": 1000, "seed": 20260928},
+        "auprc_ci": {
+            "point": point,
+            "lo": lo,
+            "hi": hi,
+            "n": n_boot,
+            "seed": 20260928,
+            "replicate_subsample": max_rows,
+        },
         "baseline": baseline_name,
         "baseline_auprc": baseline_auprc,
         "ece": ece,

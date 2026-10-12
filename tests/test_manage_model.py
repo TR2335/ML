@@ -391,6 +391,9 @@ def test_promote_gate_records_patient_split_mode(tmp_path):
     )
     assert report["split_mode"] == "patient"
     assert report["group_column"] == "encounter_id"
+    # 小 holdout 走全量 bootstrap（>50000 行才子采样，R-RS-10）
+    assert report["auprc_ci"]["n"] == 1000
+    assert report["auprc_ci"]["replicate_subsample"] is None
 
 
 def test_promote_gate_rejects_missing_group_keys(tmp_path):

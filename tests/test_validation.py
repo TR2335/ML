@@ -295,3 +295,32 @@ def test_validate_cli_encounter_mode_keeps_row_semantics(tmp_path, monkeypatch):
         validate_main()
     report = json.loads(buffer.getvalue())
     assert report["split_mode"] == "encounter"
+
+
+def test_bootstrap_budget_thresholds():
+    from scripts.validate import bootstrap_budget
+
+    assert bootstrap_budget(49_999) == (1000, None)
+    assert bootstrap_budget(50_001) == (500, 20_000)
+    assert bootstrap_budget(400_000) == (500, 20_000)
+
+
+def test_bootstrap_max_rows_limits_replicate_size():
+    from scripts.validate import bootstrap_metric
+
+    sizes: list[int] = []
+
+    def probe(labels, scores):
+        sizes.append(len(labels))
+        return sum(labels) / len(labels)
+
+    labels = list(range(100))
+    point, lo, hi = bootstrap_metric(labels, labels, probe, n=10, seed=1, max_rows=7)
+    assert sizes[0] == 100  # 点估计用全量
+    assert sizes[1:] == [7] * 10  # 每次 replicate 只抽 max_rows 行（规模裁定）
+    assert point == 49.5
+    assert lo <= hi
+    # 缺省（max_rows=None）保持全量
+    sizes.clear()
+    bootstrap_metric(labels, labels, probe, n=3, seed=1)
+    assert sizes == [100] * 4  # 点估计 + 3 次全量 replicate

@@ -68,15 +68,16 @@ def binary_metrics(
     tp = sum(label == 1 and score >= threshold for label, score in zip(labels, scores))
     fp = sum(label == 0 and score >= threshold for label, score in zip(labels, scores))
     tn = negatives - fp
-    precision_recall = []
-    for index, (_, label) in enumerate(pairs, start=1):
-        true_positive = sum(item_label for _, item_label in pairs[:index])
-        precision_recall.append(
-            (true_positive / index, true_positive / positives if positives else 0)
-        )
+    # AUPRC（average precision）单遍累积 O(n log n)：前缀和是精确整数加法，与旧
+    # O(n²) 逐 index sum 位级一致（R-RS-11；tests/test_evaluation.py 对照钉住）。
+    # 40 万行规模下旧实现需 1e10 级操作，评估/门禁/bootstrap 全部不可行。
+    cumulative_tp = 0
     auprc = 0.0
     previous_recall = 0.0
-    for precision, recall in precision_recall:
+    for index, (_, label) in enumerate(pairs, start=1):
+        cumulative_tp += label
+        precision = cumulative_tp / index
+        recall = cumulative_tp / positives if positives else 0.0
         auprc += precision * max(recall - previous_recall, 0)
         previous_recall = recall
     return {

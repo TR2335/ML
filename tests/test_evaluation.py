@@ -266,3 +266,49 @@ def test_evaluate_cli_patient_mode_loud_without_group_keys(tmp_path, monkeypatch
     )
     with pytest.raises(SystemExit, match="patient-level"):
         main()
+
+
+def _quadratic_auprc_reference(labels, scores) -> float:
+    """旧 O(n²) 前缀和实现——等价性测试的对照（R-RS-11）。"""
+    positives = sum(labels)
+    pairs = sorted(zip(scores, labels), reverse=True)
+    precision_recall = []
+    for index, (_, label) in enumerate(pairs, start=1):
+        true_positive = sum(item_label for _, item_label in pairs[:index])
+        precision_recall.append(
+            (true_positive / index, true_positive / positives if positives else 0)
+        )
+    auprc = 0.0
+    previous_recall = 0.0
+    for precision, recall in precision_recall:
+        auprc += precision * max(recall - previous_recall, 0)
+        previous_recall = recall
+    return auprc
+
+
+def test_binary_metrics_auprc_matches_quadratic_reference():
+    from random import Random
+
+    from scripts.evaluate_model import binary_metrics
+
+    rng = Random(7)
+    for trial in range(25):
+        labels = [rng.randrange(2) for _ in range(rng.randint(10, 300))]
+        if not sum(labels):
+            continue
+        scores = [round(rng.random(), 1) for _ in labels]  # 大量平局
+        new = binary_metrics(labels, scores, 0.5)["auprc"]
+        old = _quadratic_auprc_reference(labels, scores)
+        assert new == old, f"trial {trial}: {new!r} != {old!r}"  # 整数前缀和 → 位级一致
+
+
+def test_binary_metrics_handles_100k_rows():
+    """O(n²) 旧实现在此规模必挂（1e10 级前缀和）；O(n log n) 新实现秒级完成。"""
+    from scripts.evaluate_model import binary_metrics
+
+    n = 100_000
+    labels = [1 if index % 7 == 0 else 0 for index in range(n)]
+    scores = [(index % 997) / 997 for index in range(n)]
+    metrics = binary_metrics(labels, scores, 0.5)
+    assert metrics["n"] == n
+    assert metrics["auprc"] is not None and 0 < metrics["auprc"] <= 1

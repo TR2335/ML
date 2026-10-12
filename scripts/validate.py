@@ -131,6 +131,13 @@ def patient_rolling_time_split(
     return folds
 
 
+def bootstrap_budget(n_rows: int) -> tuple[int, int | None]:
+    """规模裁定（R-RS-10）：>50000 行 → (500 次, 每次 ≤20000 行)；否则 (1000, None) 全量。"""
+    if n_rows > 50_000:
+        return 500, 20_000
+    return 1000, None
+
+
 def bootstrap_metric(
     labels: list[int],
     scores: list[float],
@@ -138,16 +145,22 @@ def bootstrap_metric(
     n: int = 1000,
     *,
     seed: int | None = None,
+    max_rows: int | None = None,
 ) -> tuple[float, float, float]:
-    """Percentile bootstrap: (point, lo, hi) at 2.5%/97.5% percentiles."""
+    """Percentile bootstrap: (point, lo, hi) at 2.5%/97.5% percentiles.
+
+    max_rows：单次 replicate 有放回子采样上限（>50000 行时 ≤20000，方法学仍是
+    percentile bootstrap；报告须注明 replicate_subsample，R-RS-10）。
+    """
     if not labels or len(labels) != len(scores):
         raise ValueError("labels and scores must be non-empty and the same length")
     rng = Random(seed)
     point = metric(labels, scores)
     size = len(labels)
+    sample_size = size if max_rows is None else min(size, max_rows)
     distribution = []
     for _ in range(n):
-        indices = [rng.randrange(size) for _ in range(size)]
+        indices = [rng.randrange(size) for _ in range(sample_size)]
         distribution.append(metric([labels[i] for i in indices], [scores[i] for i in indices]))
     distribution.sort()
     lo = distribution[max(int(n * 0.025), 0)]
@@ -241,7 +254,18 @@ def main() -> None:
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--label-column", default="label")
     parser.add_argument("--n-splits", type=int, default=3)
-    parser.add_argument("--n-bootstrap", type=int, default=1000)
+    parser.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=None,
+        help="replicate 次数；缺省按规模自适应（>50000 行 → 500）",
+    )
+    parser.add_argument(
+        "--bootstrap-max-rows",
+        type=int,
+        default=None,
+        help="replicate 子采样上限；缺省按规模自适应（>50000 行 → 20000）",
+    )
     parser.add_argument(
         "--target-id",
         choices=["deterioration_24h", "readmission_30d"],
@@ -291,8 +315,14 @@ def main() -> None:
     def auprc(labels: list[int], scores: list[float]) -> float:
         return binary_metrics(labels, scores, threshold)["auprc"] or 0.0
 
+    n_bootstrap = args.n_bootstrap
+    max_rows = args.bootstrap_max_rows
+    if n_bootstrap is None or max_rows is None:
+        auto_n, auto_max = bootstrap_budget(len(oof_labels))
+        n_bootstrap = auto_n if n_bootstrap is None else n_bootstrap
+        max_rows = auto_max if max_rows is None else max_rows
     point, lo, hi = bootstrap_metric(
-        oof_labels, oof_scores, auprc, n=args.n_bootstrap, seed=20260928
+        oof_labels, oof_scores, auprc, n=n_bootstrap, seed=20260928, max_rows=max_rows
     )
     report = {
         "target_id": args.target_id,
@@ -305,7 +335,8 @@ def main() -> None:
             "point": point,
             "lo": lo,
             "hi": hi,
-            "n": args.n_bootstrap,
+            "n": n_bootstrap,
+            "replicate_subsample": max_rows,
         },
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))

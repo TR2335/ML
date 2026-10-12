@@ -43,6 +43,14 @@ POSTGRES_PASSWORD=local docker compose up --build
 
 训练脚本使用 scikit-learn 逻辑回归管线（中位数填补 → 标准化 → L2、`class_weight=balanced`，C∈{0.01,0.1,1} 按时间交叉验证 AUPRC 选取）生成两个独立目标的工件（`data/model.json` 和 `data/readmission_model.json`）；训练数据与演示/导入同源（合成患者 → 标签派生管道）。scikit-learn 仅是训练/评估依赖（`pip install -e ".[dev]"` 或 `".[train]"`），serving 保持纯标准库。真实数据导入和指标验证命令见 `docs/readiness-review.md`。
 
+真实规模演练（2–3 万出院/入院合成队列）：一键跑通「生成 → 训练 → 患者级时间切分验证（整患者不跨折）→ 评估 → promote 门禁 → 模型报告卡 → PSI+KS 漂移自检」，按组计时预算并产出机读报告：
+
+```powershell
+& .\.venv\Scripts\python scripts\scale_rehearsal.py --scale 25000
+# 产物：data/scale/（队列 CSV、工件、报告卡）与 data/rehearsal_report.{json,md}
+# 单步也可用 --scale 调 generate_scale_data.py / train_model.py --input / validate.py --split patient / report_card.py
+```
+
 准备面试时从 [`docs/interview-guide.md`](docs/interview-guide.md) 开始。它包含 30 秒/3 分钟项目介绍、完整请求链路、模型指标、Redis 与一致性、医疗安全边界、20 个高频追问和七天训练计划。
 
 生产异步事件：设置 `EVENT_BACKEND=redis`、`REDIS_URL` 和 `REDIS_STREAM` 后，API 会先持久化事件再写入 Redis Stream，worker 使用 consumer group 按触发策略计算（`deterioration_24h` 逐事件、`readmission_30d` 仅出院事件）并 ACK；处理失败的消息会留在 pending 列表中，下一次 worker 会尝试 reclaim，超过 `REDIS_MAX_DELIVERY_ATTEMPTS` 后转入死信流。生产应为 Redis 配置高可用、持久化、容量和死信运维策略。
@@ -88,12 +96,16 @@ scripts/
   baselines.py       NEWS2 与 LACE 基线评分
   build_features.py  landmark 七元组特征构建
   derive_labels.py   标签派生（demo CLI）
-  evaluate_model.py  模型评估与三列对比
+  evaluate_model.py  模型评估与三列对比（--split patient|encounter）
   generate_demo_data.py
+  generate_scale_data.py  2–3 万规模合成队列生成（G1）
   import_clinical_data.py  真实数据导入与单事务校验
   manage_model.py    模型 promote、SHA-256 清单与 rollback
-  train_model.py     scikit-learn 逻辑回归训练脚本
-  validate.py        滚动时间切分与 bootstrap CI
+  monitor_drift.py   PSI + KS 双指标漂移监控（派生特征即时编码）
+  report_card.py     自动模型报告卡（10 章节，md + json）
+  scale_rehearsal.py 端到端规模演练编排（分组时间预算）
+  train_model.py     scikit-learn 逻辑回归训练脚本（--input 规模 CSV）
+  validate.py        滚动时间切分（患者级防泄漏）与 bootstrap CI
 docs/
   architecture.md    企业架构和演进路线
   data-contract.md   事件与风险接口契约（含结局表型/工件 v2/NEWS2）

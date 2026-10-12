@@ -16,3 +16,5 @@ dist/
 build/
 *.egg-info/
 data/*.csv
+data/scale/
+data/rehearsal_report.*

@@ -1,20 +1,20 @@
-# MedIntel 终版状态（2026-10-10 会话交接）
+# MedIntel 终版状态（2026-10-12 更新）
 
-> 新终端会话从这里恢复上下文。计划原文：`docs/superpowers/plans/2026-10-10-medintel-p7.md`、`2026-10-10-medintel-p8.md`、`2026-09-28-medintel-p6.md`（及 P0–P5 同目录）。
+> 新终端会话从这里恢复上下文。计划原文：`docs/superpowers/plans/2026-10-12-medintel-real-scale-optimization.md`（P-Scale 补录版）、`2026-10-10-medintel-p7.md`、`2026-10-10-medintel-p8.md`、`2026-09-28-medintel-p6.md`（及 P0–P5 同目录）；设计 spec：`docs/superpowers/specs/2026-10-12-medintel-real-scale-optimization-design.md`。
 
 ## 当前状态
 
-- **P6 / P7 / P8 全部按终版计划实现完毕**，每任务独立提交，每计划经全新上下文终审并完成唯一修复轮。
-- 分支 `master` 的 56 个提交（`afc3899..2f8ae51`）已于 2026-10-10 新会话**推送成功**（`7ddab7c..2f8ae51`），本地与 `origin/master` 同步。
-- 验证基线：`pytest` → **156 passed + 1 skipped + 2 deselected**；`ruff check .` 与 `ruff format --check app tests scripts` 全零；`app/` 对 sklearn/numpy/scipy/lightgbm/optuna 零命中（serving 纯净）。
-- 终审结论：P6（2 Critical+3 Important 已修）、P8（0C+3I 已修）、P7（0C+4I 已修），三轮均 "With fixes→已修复"。
-- `docs/superpowers/`（全部计划 + 本文件）已于 2026-10-10 入库；`docs/data-integration-design.md` 已入库。
+- **P-Scale（真实规模优化 G1–G5）已于 2026-10-12 实施完毕**：T1–T8 逐任务 TDD 独立提交（`8657956..HEAD`），18 项执行期裁定（R-RS-1..16、R-RHR-1..2）与任务映射见计划补录文档。
+- **25000 规模端到端演练真跑 passed=True**（936.6s / 预算 1380s 内）：泄漏 0 违规；双门禁全过（ECE 0.0007 / 0.0082）；事件率 4.1%、再入院 12.24%；40 万行 deterioration + 3 院区 45/35/20；holdout 80000/5000；超预算留痕 `evaluate`（132s>120s）与 `report`（263s>60s，见 deferred）。
+- 验证基线：`pytest` → **194 passed + 1 skipped + 2 deselected**（含 1500 规模冒烟 `@slow`，默认执行）；`ruff` 全零；`app/` serving 纯净（新增 `app/cohort.py` 仅标准库）。
+- **P6 / P7 / P8 状态不变**：56 提交已推送（2026-10-10）；三轮终审结论与 24 项 deferred minors 见下文（仍然有效）。
+- P-Scale 相对 P8 的接口变化：`validate`/`evaluate`/`promote` 新增 `--split`（默认 **patient**，缺分组键响亮报错——既有 holdout CSV 需含 `patient_id` 或 `encounter_id`）；`train_model --input` 吃规模 CSV；`monitor_drift` 输出 `ks/ks_reason` 且对出院源字段 CSV 即时派生；工件 `drift_reference` 新增 `sample`（≤2000/特征）。
 
 ## 待办
 
-1. ~~**推送**：`git push origin master`（56 提交）~~ **已完成（2026-10-10）**。
-2. ~~（可选）计划文件入库~~ **已完成（2026-10-10）**。
-3. **P9 真实数据自助接入**：用户取数后按 `docs/data-integration-design.md` 执行（出院快照 6 字段契约已定：`discharge_destination/los_days/diagnosis_codes/comorbidity_index/prior_utilization_12m/ed_visits_6m`）。
+1. ~~推送（56 提交）~~ 已完成（2026-10-10）。
+2. **P-Scale 提交推送**：`git push origin master`（2026-10-12 新增提交，待用户确认）。
+3. **P9 真实数据自助接入**：用户取数后按 `docs/data-integration-design.md` 执行（出院快照 6 字段契约已定：`discharge_destination/los_days/diagnosis_codes/comorbidity_index/prior_utilization_12m/ed_visits_6m`）；真实数据下先跑 `scale_rehearsal` 同款链路（`generate_scale_data` 换成真实导入），患者级切分与报告卡即刻可用。
 
 ## 关键运行时事实
 

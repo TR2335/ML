@@ -106,11 +106,22 @@ flowchart LR
 - **漂移监控**：训练写 `drift_reference`；`monitor_drift.py` PSI>0.2 告警 + `recalibrate.py` 门禁内再校准
 - 终审 0C+4I 修复
 
-### 当前状态（2026-10-10 晚）
+### P-Scale · 真实规模优化（2026-10-12，设计 spec `docs/superpowers/specs/2026-10-12-medintel-real-scale-optimization-design.md`）
 
-- 58 个提交全部推送（`origin/master` 同步），`docs/superpowers/` 计划与交接文档已入库
-- 验证基线：`pytest` 156 passed + 1 skipped + 2 deselected；`ruff` 全零；`app/` serving 纯净
-- 24 项终审 deferred minors 清单在 `docs/superpowers/STATUS.md`
+面向 2–3 万出院/入院体量的方法学与工程验证（P9 真实数据前置必修），方案 A"并行增量"，演示路径零改动：
+
+- **G1 规模队列**：`app/cohort.py`（纯标准库确定性合成：22% 多次住院、4% 恶化事件率 + 事件前漂移、12% 再入院 latent、MAR 缺失 5–12%）+ `scripts/generate_scale_data.py` 流式写 16 格 landmark 数据集
+- **G2 患者级防泄漏**：`patient_rolling_time_split`（整患者不跨折 + 患者时点不拆块 + 返回前自证交集为空）；`validate`/`evaluate`/`promote` 三处 `--split`（默认 patient，缺分组键响亮报错）
+- **G3 报告卡**：`scripts/report_card.py` 10 章节（md+json），指标只复用既有函数（discrimination 与直接 `binary_metrics` 等值测试钉住）
+- **G4 漂移双检**：`compute_ks`（纯排序双指针，效应量不看 p 值）+ 训练写确定性参考样本（≤2000/特征）；readmission 派生特征输入缺列时即时编码
+- **G5 规模演练**：`scripts/scale_rehearsal.py` 编排 7 组 13 步（生成→训练→患者级验证→评估→门禁→报告卡→漂移自检），分组时间预算 + 机读通过标准
+- **性能前置**：`binary_metrics` AUPRC O(n²)→O(n log n)（整数前缀和位级等价）；bootstrap 规模预算（>50000 行 → 500 次 × ≤20000 行子采样，报告注明 `replicate_subsample`）
+
+### 当前状态（2026-10-12）
+
+- 本轮 8 任务（T1–T8）逐任务 TDD 独立提交；25000 规模端到端演练真跑见 `data/rehearsal_report.json`（`data/` 不入库，关键数字见 STATUS.md）
+- 验证基线：`pytest` 194 passed + 1 skipped + 2 deselected（含 1500 规模冒烟）；`ruff` 全零；`app/` serving 纯净（`app/cohort.py` 仅标准库）
+- 24 项 P6–P8 终审 deferred minors 清单仍在 `docs/superpowers/STATUS.md`（本轮新增裁定与 deferred 见该文件）
 
 ## 4. 横切演化主线
 
@@ -120,14 +131,14 @@ flowchart LR
 | 校准 | 无（P0-P5）→ Platt（P6）→ isotonic + 低分辨率回退（P7） |
 | 门禁 | 无 → AUPRC+ECE（P6）→ +LACE（P8）→ +亚组+逐院区+决策曲线（P7） |
 | 基线 | NEWS2（P5）→ +LACE（P8） |
-| 监控 | 指标计数（P0）→ PSI 漂移告警 + 门禁内再校准（P7） |
+| 监控 | 指标计数（P0）→ PSI 漂移告警 + 门禁内再校准（P7）→ PSI+KS 双指标 + 参考样本（P-Scale） |
 | 存储 | SQLite 单后端（P0）→ +PostgreSQL 适配器/Redis Streams（P0 附带，P2-P3 加固） |
 | 安全 | 演示令牌（P0）→ fail-closed + CSP + 租户隔离（P1）→ 模型验签（P3） |
-| 验证 | 无 → 滚动时间切分 + bootstrap CI（P5）→ golden 钉住（P6）→ 本优化轮补患者级防泄漏 |
+| 验证 | 无 → 滚动时间切分 + bootstrap CI（P5）→ golden 钉住（P6）→ 患者级防泄漏 + 报告卡 + 规模演练（P-Scale） |
 
 ## 5. 未来演化方向
 
-1. **本轮优化（进行中）**：患者级切分防泄漏（P9 前置必修）、自动模型报告卡、漂移 KS 检验补充、2-3 万出院规模演练
+1. ~~**本轮优化（进行中）**：患者级切分防泄漏（P9 前置必修）、自动模型报告卡、漂移 KS 检验补充、2-3 万出院规模演练~~ **已完成（2026-10-12，P-Scale，见 §3）**
 2. **P9 真实数据接入**：按 `docs/data-integration-design.md` 执行出院快照 6 字段契约；真实数据下指标才第一次有意义
 3. **对标补齐**（源自 GitHub 同类项目调研）：FHIR R4 导入适配（参考 `mimic-fhir`）、多方法漂移检测（参考 `VectorInstitute/cyclops`）、队列生成独立化（参考 `YAIB`）
 4. **生产化**：OIDC 接入、Prometheus 抓取与 SLO 告警、受控模型 Registry/灰度、院内数据治理与合规评估、前瞻性静默运行（见 `docs/clinical-pilot-protocol.md`）

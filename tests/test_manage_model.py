@@ -7,12 +7,14 @@ def _write_gate_rows(csv_path: Path, invert_labels: bool) -> None:
     """16 行留出集、25% 阳性：空阳性 bootstrap 抽样 0.75^16≈1.0% < 2.5% 分位，
     保证 CI lo 可用；news2 分量恒定 → binary_metrics 元组平局按 label 降序 →
     AUPRC=1.0（既有行为，见台账 Task 3 Ruling）。"""
-    header = "creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,label"
+    header = (
+        "encounter_id,creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,label"
+    )
     lines = [header]
     for i in range(16):
         creatinine = 3.0 if i % 4 == 0 else 0.8
         label = (1 if creatinine > 2 else 0) ^ (1 if invert_labels else 0)
-        lines.append(f"{creatinine},70,16,120,98,36.8,{label}")
+        lines.append(f"enc-{i + 1:04d},{creatinine},70,16,120,98,36.8,{label}")
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -158,14 +160,14 @@ def test_promote_gate_accepts_and_records_eval(tmp_path):
 def _write_lace_rows(csv_path: Path, invert_labels: bool) -> None:
     """24 行出院留出集：连续 comorbidity 决定标签（LACE 的分箱在此损失排序信息）。"""
     header = (
-        "los_days,prior_utilization_12m,comorbidity_index,ed_visits_6m,"
+        "encounter_id,los_days,prior_utilization_12m,comorbidity_index,ed_visits_6m,"
         "diagnosis_codes,discharge_destination,label"
     )
     lines = [header]
     for i in range(24):
         comorbidity = round(0.25 * i, 2)  # 0.00..5.75 连续
         label = int(comorbidity >= 3.0) ^ (1 if invert_labels else 0)
-        lines.append(f"2.0,0,{comorbidity},0,[],home,{label}")
+        lines.append(f"enc-{i + 1:04d},2.0,0,{comorbidity},0,[],home,{label}")
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -289,14 +291,16 @@ def test_gate_rejects_subgroup_sensitivity_imbalance(tmp_path):
         ),
         encoding="utf-8",
     )
-    header = "creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,age,label"
+    header = (
+        "encounter_id,creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,age,label"
+    )
     lines = [header]
-    for _ in range(12):  # 老组阳性：高肌酐 → 模型高分命中（sens=1.0）
-        lines.append("3.0,70,16,120,98,36.8,75,1")
-    for _ in range(12):  # 年轻组阳性：低肌酐 → 模型低分漏检（sens=0.0）
-        lines.append("0.5,70,16,120,98,36.8,40,1")
-    for _ in range(136):  # 阴性（与年轻组阳性同特征 → 同分桶）
-        lines.append("0.5,70,16,120,98,36.8,40,0")
+    for i in range(12):  # 老组阳性：高肌酐 → 模型高分命中（sens=1.0）
+        lines.append(f"enc-{i + 1:04d},3.0,70,16,120,98,36.8,75,1")
+    for i in range(12):  # 年轻组阳性：低肌酐 → 模型低分漏检（sens=0.0）
+        lines.append(f"enc-{i + 13:04d},0.5,70,16,120,98,36.8,40,1")
+    for i in range(136):  # 阴性（与年轻组阳性同特征 → 同分桶）
+        lines.append(f"enc-{i + 25:04d},0.5,70,16,120,98,36.8,40,0")
     holdout.write_text("\n".join(lines) + "\n", encoding="utf-8")
     registry = tmp_path / "registry"
     old_argv = sys.argv
@@ -354,3 +358,71 @@ def test_gate_rules_degrade_when_columns_absent(tmp_path):
     assert report["rules"]["subgroup"]["status"] == "skipped"
     assert report["rules"]["facility"]["status"] == "skipped"
     assert report["rules"]["decision_curve"]["status"] in ("pass", "skipped")
+
+
+def test_promote_gate_records_patient_split_mode(tmp_path):
+    """患者级口径（spec §4.2 接入点 3）：eval.json 记录 split_mode=patient。"""
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "good.json"
+    holdout = tmp_path / "holdout.csv"
+    _write_gate_artifact(artifact, "split-v1")
+    _write_gate_rows(holdout, invert_labels=False)
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        manage_main()
+    finally:
+        sys.argv = old_argv
+    report = json.loads(
+        (registry / "deterioration_24h" / "split-v1" / "eval.json").read_text(encoding="utf-8")
+    )
+    assert report["split_mode"] == "patient"
+    assert report["group_column"] == "encounter_id"
+
+
+def test_promote_gate_rejects_missing_group_keys(tmp_path):
+    """缺分组键的 holdout 在患者级口径下响亮拒绝，不留 manifest（R-RS-9）。"""
+    import pytest
+
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "good.json"
+    holdout = tmp_path / "bare.csv"
+    _write_gate_artifact(artifact, "nokey-v1")
+    holdout.write_text(
+        "creatinine,label\n3.0,1\n0.8,0\n" * 8,
+        encoding="utf-8",
+    )
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        with pytest.raises(SystemExit, match="promotion gate rejected"):
+            manage_main()
+    finally:
+        sys.argv = old_argv
+    assert not (registry / "manifest.json").exists()

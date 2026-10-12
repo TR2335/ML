@@ -15,7 +15,7 @@ if __package__ in (None, ""):
 
 from app.config import Settings
 from app.risk import RiskEngine
-from scripts.evaluate_model import binary_metrics, evaluate_rows
+from scripts.evaluate_model import binary_metrics, evaluate_rows, resolve_group_column
 
 
 def _row_time(row: dict) -> datetime:
@@ -24,6 +24,28 @@ def _row_time(row: dict) -> datetime:
         raise ValueError("every row needs index_time or occurred_at for temporal splitting")
     parsed = datetime.fromisoformat(str(raw))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _contiguous_blocks(groups: list[list[dict]], n_splits: int) -> list[list[dict]]:
+    """把有序时间组切成 n_splits + 1 个连续块（组永不拆分；行级与患者级切分共用）。"""
+    total = sum(len(group) for group in groups)
+    blocks: list[list[dict]] = []
+    group_index = 0
+    assigned = 0
+    remaining = len(groups)
+    for block_i in range(1, n_splits + 2):
+        blocks_after = n_splits + 1 - block_i
+        target = block_i * total / (n_splits + 1)
+        block: list[dict] = []
+        while remaining > blocks_after:
+            if block and assigned + len(block) >= target:
+                break
+            block.extend(groups[group_index])
+            group_index += 1
+            remaining -= 1
+        assigned += len(block)
+        blocks.append(block)
+    return blocks
 
 
 def rolling_time_split(rows: list[dict], n_splits: int) -> list[tuple[list[dict], list[dict]]]:
@@ -51,27 +73,61 @@ def rolling_time_split(rows: list[dict], n_splits: int) -> list[tuple[list[dict]
             f"need at least {n_splits + 1} distinct timestamps so every test fold "
             "starts strictly after its training window"
         )
-    total = len(ordered)
-    blocks: list[list[dict]] = []
-    group_index = 0
-    assigned = 0
-    remaining = len(groups)
-    for block_i in range(1, n_splits + 2):
-        blocks_after = n_splits + 1 - block_i
-        target = block_i * total / (n_splits + 1)
-        block: list[dict] = []
-        while remaining > blocks_after:
-            if block and assigned + len(block) >= target:
-                break
-            block.extend(groups[group_index])
-            group_index += 1
-            remaining -= 1
-        assigned += len(block)
-        blocks.append(block)
+    blocks = _contiguous_blocks(groups, n_splits)
     folds: list[tuple[list[dict], list[dict]]] = []
     for index in range(1, n_splits + 1):
         train = [row for block in blocks[:index] for row in block]
         folds.append((train, blocks[index]))
+    return folds
+
+
+def patient_rolling_time_split(
+    rows: list[dict], n_splits: int, group_column: str = "patient_id"
+) -> list[tuple[list[dict], list[dict]]]:
+    """患者级 expanding window：整患者不跨折、同患者时点不拆块，返回前自证无交集。
+
+    分组键解析 patient_id → encounter_id（默认列缺失时），皆缺 ValueError——
+    不静默降级为行级切分（spec §4.2.1）。同一患者时点的多个患者不拆块，沿用
+    "时间戳不跨折"裁定；患者时点 = 该患者最早行时间。
+    """
+    if n_splits < 1:
+        raise ValueError("n_splits must be >= 1")
+    if len(rows) < n_splits + 1:
+        raise ValueError(f"need at least {n_splits + 1} rows for {n_splits} splits")
+    column = group_column
+    if not any(str(row.get(column, "") or "") for row in rows):
+        column = resolve_group_column(rows, group_column)  # 回退或响亮报错
+    patients: dict[str, list[dict]] = {}
+    for row in rows:
+        key = str(row.get(column, "") or "")
+        if not key:
+            raise ValueError(f"every row needs a {column} value for patient-level splitting")
+        patients.setdefault(key, []).append(row)
+    patient_time = {key: min(_row_time(row) for row in group) for key, group in patients.items()}
+    timed: list[tuple[datetime, list[dict]]] = []
+    for key in sorted(patients, key=lambda item: (patient_time[item], item)):
+        moment = patient_time[key]
+        if timed and timed[-1][0] == moment:
+            timed[-1][1].extend(patients[key])
+        else:
+            timed.append((moment, list(patients[key])))
+    if len(timed) < n_splits + 1:
+        raise ValueError(
+            f"need at least {n_splits + 1} distinct patient times so every test fold "
+            "starts strictly after its training window"
+        )
+    blocks = _contiguous_blocks([group for _, group in timed], n_splits)
+    folds: list[tuple[list[dict], list[dict]]] = []
+    for index in range(1, n_splits + 1):
+        train = [row for block in blocks[:index] for row in block]
+        test = blocks[index]
+        train_keys = {str(row[column]) for row in train}
+        test_keys = {str(row[column]) for row in test}
+        overlap = train_keys & test_keys
+        if overlap:
+            # 不变量做成代码而非约定：跨折即断言失败（spec §4.2.4）
+            raise AssertionError(f"patient leakage across folds: {sorted(overlap)[:5]}")
+        folds.append((train, test))
     return folds
 
 
@@ -192,6 +248,12 @@ def main() -> None:
         default="deterioration_24h",
     )
     parser.add_argument("--model", type=Path, default=None)
+    parser.add_argument(
+        "--split",
+        choices=["patient", "encounter"],
+        default="patient",
+        help="患者级（整患者不跨折）或旧行级切分（golden/回归对照用 encounter）",
+    )
     args = parser.parse_args()
     model_path = args.model or Path(
         "data/model.json"
@@ -203,7 +265,13 @@ def main() -> None:
     )
     with args.input.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
-    folds = rolling_time_split(rows, args.n_splits)
+    if args.split == "patient":
+        try:
+            folds = patient_rolling_time_split(rows, args.n_splits)
+        except ValueError as exc:
+            raise SystemExit(f"validate: {exc}") from exc
+    else:
+        folds = rolling_time_split(rows, args.n_splits)
     fold_reports = []
     oof_labels: list[int] = []
     oof_scores: list[float] = []
@@ -229,6 +297,7 @@ def main() -> None:
     report = {
         "target_id": args.target_id,
         "model_version": engine.version,
+        "split_mode": args.split,
         "folds": fold_reports,
         "out_of_fold": binary_metrics(oof_labels, oof_scores, threshold),
         "bootstrap_ci": {

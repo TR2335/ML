@@ -107,6 +107,21 @@ META_COLUMNS = {
 }
 
 
+def resolve_group_column(rows: list[dict], requested: str = "patient_id") -> str:
+    """患者级分组键解析：requested → encounter_id 回退 → 报错。
+
+    皆缺时响亮报错而非静默降级为行级切分（spec §4.2.1，R-RS-8：本函数住在此模块，
+    validate/manage_model 顺向 import，避免循环依赖）。
+    """
+    if not rows:
+        raise ValueError("patient-level split needs at least one row")
+    if any(str(row.get(requested, "") or "") for row in rows):
+        return requested
+    if requested == "patient_id" and any(str(row.get("encounter_id", "") or "") for row in rows):
+        return "encounter_id"
+    raise ValueError(f"patient-level split needs a {requested} column (or encounter_id)")
+
+
 def payload_from_row(row) -> dict:
     """CSV/映射行 → 临床事件 payload（双目标共享，Ruling R-P8-7）。"""
     payload: dict = {}
@@ -251,6 +266,12 @@ def main() -> None:
         "--target-id", choices=["deterioration_24h", "readmission_30d"], default="deterioration_24h"
     )
     parser.add_argument("--model", type=Path, default=None)
+    parser.add_argument(
+        "--split",
+        choices=["patient", "encounter"],
+        default="patient",
+        help="患者级分组键校验口径；encounter 保留旧行为供回归对照（spec §4.2）",
+    )
     args = parser.parse_args()
 
     model_path = args.model or Path(
@@ -270,6 +291,12 @@ def main() -> None:
     )
     with args.input.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
+    split_group: str | None = None
+    if args.split == "patient":
+        try:
+            split_group = resolve_group_column(rows)
+        except ValueError as exc:
+            raise SystemExit(f"evaluate_model: {exc}") from exc
     if args.split_time:
         split = datetime.fromisoformat(args.split_time).astimezone(UTC)
         rows = [
@@ -282,6 +309,8 @@ def main() -> None:
         "target_id": args.target_id,
         "model_version": engine.version,
         "thresholds": engine.thresholds,
+        "split_mode": args.split,
+        "group_column": split_group,
     }
     if args.input_format == "labeled_csv":
         if args.group_column:

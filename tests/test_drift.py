@@ -107,12 +107,12 @@ def test_recalibrate_only_updates_calibration_and_gates(tmp_path):
 
     rows, _matrix, labels = build_demo_dataset("readmission_30d", 800)
     holdout = tmp_path / "cal.csv"
-    fields = [*READMISSION_PAYLOAD_KEYS, "label"]
+    fields = ["encounter_id", *READMISSION_PAYLOAD_KEYS, "label"]
     with holdout.open("w", newline="", encoding="utf-8") as fh:
         writer = _csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
-        for row, label in zip(rows, labels):
-            out = {}
+        for index, (row, label) in enumerate(zip(rows, labels), start=1):
+            out = {"encounter_id": f"enc-{index:04d}"}
             for key in READMISSION_PAYLOAD_KEYS:
                 value = row.get(key, "")
                 out[key] = json.dumps(value) if isinstance(value, list) else str(value)
@@ -142,8 +142,8 @@ def test_recalibrate_only_updates_calibration_and_gates(tmp_path):
     with no_positive.open("w", newline="", encoding="utf-8") as fh:
         writer = _csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
-        for row in list(rows)[:40]:
-            out = {}
+        for index, row in enumerate(list(rows)[:40], start=1):
+            out = {"encounter_id": f"enc-{index:04d}"}
             for key in READMISSION_PAYLOAD_KEYS:
                 value = row.get(key, "")
                 out[key] = json.dumps(value) if isinstance(value, list) else str(value)

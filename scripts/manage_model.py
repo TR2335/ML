@@ -27,7 +27,7 @@ from app.config import Settings
 from app.risk import RiskEngine
 from app.synthetic import FEATURES
 from scripts.baselines import news2_score
-from scripts.evaluate_model import binary_metrics, evaluate_rows
+from scripts.evaluate_model import binary_metrics, evaluate_rows, resolve_group_column
 from scripts.validate import (
     bootstrap_metric,
     decision_curve_mean_gain,
@@ -97,7 +97,9 @@ def atomic_write(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
-def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> dict:
+def run_promotion_gate(
+    artifact_path: Path, target_id: str, input_csv: Path, split_mode: str = "patient"
+) -> dict:
     # 双路径都指向被 promote 的工件（readmission 引擎按 readmission_model_path 选
     # 路径）；strict 模式（app_env != dev）+ 显式关闭验签：工件加载失败直接抛错，
     # 禁止 dev 静默回落用默认权重打分（Review I1）。
@@ -112,6 +114,14 @@ def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> 
     )
     with input_csv.open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
+    gate_group: str | None = None
+    if split_mode == "patient":
+        # 门禁数字一律以患者级口径评估（spec §4.2 接入点 3，R-RS-9）：
+        # holdout 缺分组键 → 响亮拒绝，不静默按行级放行。
+        try:
+            gate_group = resolve_group_column(rows)
+        except ValueError as exc:
+            raise SystemExit(f"promotion gate rejected: {exc}") from exc
     labels, scores = evaluate_rows(rows, engine, "label")
     if not labels or not sum(labels):
         raise SystemExit("promotion gate rejected: holdout needs labels and at least one positive")
@@ -169,6 +179,8 @@ def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> 
         "passed": bool(
             lo >= baseline_auprc and ece is not None and ece < 0.05 and not failing_rules
         ),
+        "split_mode": split_mode,
+        "group_column": gate_group,
         "auprc_ci": {"point": point, "lo": lo, "hi": hi, "n": 1000, "seed": 20260928},
         "baseline": baseline_name,
         "baseline_auprc": baseline_auprc,
@@ -195,7 +207,9 @@ def run_promotion_gate(artifact_path: Path, target_id: str, input_csv: Path) -> 
 def promote(args: argparse.Namespace) -> None:
     artifact_path = Path(args.artifact)
     artifact = load_artifact(artifact_path, args.target_id, args.version)
-    gate_report = run_promotion_gate(artifact_path, args.target_id, Path(args.input))
+    gate_report = run_promotion_gate(
+        artifact_path, args.target_id, Path(args.input), split_mode=args.split
+    )
     version = str(artifact["model_version"])
     registry = Path(args.registry_dir)
     destination = registry / args.target_id / f"{version}.json"
@@ -270,6 +284,12 @@ def main() -> None:
     )
     promote_parser.add_argument("--version")
     promote_parser.add_argument("--serving-path")
+    promote_parser.add_argument(
+        "--split",
+        choices=["patient", "encounter"],
+        default="patient",
+        help="门禁分组键校验口径；encounter 保留旧行为供对照（spec §4.2）",
+    )
     promote_parser.set_defaults(handler=promote)
     rollback_parser = subparsers.add_parser("rollback")
     rollback_parser.add_argument("--target-id", choices=sorted(TARGETS), required=True)

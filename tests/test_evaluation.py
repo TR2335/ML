@@ -158,8 +158,8 @@ def test_labeled_csv_rejected_for_readmission(tmp_path, monkeypatch):
 
     csv_path = tmp_path / "holdout.csv"
     csv_path.write_text(
-        "los_days,prior_utilization_12m,comorbidity_index,ed_visits_6m,label\n"
-        "2.0,0,1.0,0,1\n2.0,0,0.0,0,0\n",
+        "encounter_id,los_days,prior_utilization_12m,comorbidity_index,ed_visits_6m,label\n"
+        "enc-1,2.0,0,1.0,0,1\nenc-2,2.0,0,0.0,0,0\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -202,7 +202,7 @@ def test_evaluate_cli_uses_explicit_model_for_readmission(tmp_path, monkeypatch)
         encoding="utf-8",
     )
     csv_path = tmp_path / "rows.csv"
-    csv_path.write_text("los_days,label\n1.0,1\n2.0,0\n", encoding="utf-8")
+    csv_path.write_text("encounter_id,los_days,label\nenc-1,1.0,1\nenc-2,2.0,0\n", encoding="utf-8")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -224,3 +224,45 @@ def test_evaluate_cli_uses_explicit_model_for_readmission(tmp_path, monkeypatch)
         main()
     report = json.loads(buffer.getvalue())
     assert report["model_version"] == "probe-rm-v1"
+
+
+def test_evaluate_cli_patient_mode_reports_split(tmp_path, monkeypatch):
+    """默认 patient 模式：解析分组键并写入报告（spec §4.2 接入点 2）。"""
+    import contextlib
+    import io
+    import json
+
+    from scripts.evaluate_model import main
+
+    csv_path = tmp_path / "rows.csv"
+    csv_path.write_text(
+        "patient_id,encounter_id,index_time,label\n"
+        "pat-1,enc-1,2026-01-01T00:00:00+00:00,1\n"
+        "pat-2,enc-2,2026-01-02T00:00:00+00:00,0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["evaluate_model.py", "--input", str(csv_path), "--split", "patient"],
+    )
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        main()
+    report = json.loads(buffer.getvalue())
+    assert report["split_mode"] == "patient"
+    assert report["group_column"] == "patient_id"
+
+
+def test_evaluate_cli_patient_mode_loud_without_group_keys(tmp_path, monkeypatch):
+    import pytest
+
+    from scripts.evaluate_model import main
+
+    csv_path = tmp_path / "bare.csv"
+    csv_path.write_text("los_days,label\n1.0,1\n2.0,0\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["evaluate_model.py", "--input", str(csv_path), "--split", "patient"],
+    )
+    with pytest.raises(SystemExit, match="patient-level"):
+        main()

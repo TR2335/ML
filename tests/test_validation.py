@@ -127,3 +127,171 @@ def test_per_facility_auprc_requires_two_facilities():
     # 缺 facility 列 → 降级跳过
     missing = per_facility_auprc([{}] * 60, labels2, scores + scores, baseline_auprc=0.3)
     assert missing["checked"] is False
+
+
+def _staggered_patient_rows() -> list[dict]:
+    """6 患者 × 6 行；患者时点按 48h 错开，患者内行连续 1h。"""
+    from datetime import UTC, datetime, timedelta
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for patient in range(6):
+        for tick in range(6):
+            rows.append(
+                {
+                    "patient_id": f"pat-{patient:02d}",
+                    "encounter_id": f"enc-{patient:02d}-{tick:02d}",
+                    "index_time": (base + timedelta(hours=patient * 48 + tick)).isoformat(),
+                    "label": str((patient + tick) % 2),
+                }
+            )
+    return rows
+
+
+def test_patient_split_never_splits_a_patient():
+    from scripts.validate import patient_rolling_time_split
+
+    rows = list(reversed(_staggered_patient_rows()))  # 输入故意乱序
+    folds = patient_rolling_time_split(rows, n_splits=3)
+    assert len(folds) == 3
+    total_test_rows = 0
+    for train, test in folds:
+        train_patients = {row["patient_id"] for row in train}
+        test_patients = {row["patient_id"] for row in test}
+        assert train_patients.isdisjoint(test_patients)  # 核心不变量：整患者不跨折
+        # 行级时间序同样保持（fixture 患者块时间错开）
+        assert max(row["index_time"] for row in train) < min(row["index_time"] for row in test)
+        total_test_rows += len(test)
+    # expanding window：首块只做初始 train，其余行恰好出现在一个 test 折
+    assert total_test_rows + len(folds[0][0]) == len(rows)
+
+
+def test_patient_split_keeps_simultaneous_patients_on_one_side():
+    from datetime import UTC, datetime, timedelta
+
+    from scripts.validate import patient_rolling_time_split
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for patient, start in (("pat-a", 0), ("pat-b", 0), ("pat-c", 72), ("pat-d", 72)):
+        for tick in range(4):
+            rows.append(
+                {
+                    "patient_id": patient,
+                    "encounter_id": f"{patient}-{tick}",
+                    "index_time": (base + timedelta(hours=start + tick)).isoformat(),
+                    "label": "1",
+                }
+            )
+    train, _test = patient_rolling_time_split(rows, n_splits=1)[0]
+    train_patients = {row["patient_id"] for row in train}
+    # 同一患者时点的多个患者必须整体同侧（时间戳不跨折裁定）
+    assert ("pat-a" in train_patients) == ("pat-b" in train_patients)
+    assert ("pat-c" in train_patients) == ("pat-d" in train_patients)
+    assert train_patients in ({"pat-a", "pat-b"}, {"pat-c", "pat-d"})
+
+
+def test_patient_split_missing_group_keys_raises():
+    import pytest
+
+    from scripts.validate import patient_rolling_time_split
+
+    rows = [{"label": "1", "index_time": "2026-01-01T00:00:00+00:00"}] * 4
+    with pytest.raises(ValueError, match="patient_id"):
+        patient_rolling_time_split(rows, n_splits=2)
+
+
+def test_patient_split_falls_back_to_encounter_id():
+    from scripts.validate import patient_rolling_time_split
+
+    rows = _staggered_patient_rows()
+    for row in rows:
+        del row["patient_id"]  # 只剩 encounter_id
+    folds = patient_rolling_time_split(rows, n_splits=3)
+    for train, test in folds:
+        train_keys = {row["encounter_id"] for row in train}
+        test_keys = {row["encounter_id"] for row in test}
+        assert train_keys.isdisjoint(test_keys)
+
+
+def test_resolve_group_column_order():
+    import pytest
+
+    from scripts.evaluate_model import resolve_group_column
+
+    assert resolve_group_column([{"patient_id": "p", "encounter_id": "e"}]) == "patient_id"
+    assert resolve_group_column([{"encounter_id": "e"}]) == "encounter_id"
+    with pytest.raises(ValueError, match="patient_id"):
+        resolve_group_column([{"label": "1"}])
+
+
+def test_validate_cli_patient_mode_reports_split(tmp_path, monkeypatch):
+    import csv
+    import json
+
+    from scripts.validate import main as validate_main
+
+    csv_path = tmp_path / "rows.csv"
+    rows = _staggered_patient_rows()
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["validate.py", "--input", str(csv_path), "--split", "patient", "--n-splits", "3"],
+    )
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        validate_main()
+    report = json.loads(buffer.getvalue())
+    assert report["split_mode"] == "patient"
+    assert len(report["folds"]) == 3
+
+
+def test_validate_cli_patient_mode_loud_without_group_keys(tmp_path, monkeypatch):
+    import pytest
+
+    from scripts.validate import main as validate_main
+
+    csv_path = tmp_path / "bare.csv"
+    csv_path.write_text(
+        "index_time,label\n2026-01-01T00:00:00+00:00,1\n2026-01-02T00:00:00+00:00,0\n"
+        "2026-01-03T00:00:00+00:00,1\n2026-01-04T00:00:00+00:00,0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["validate.py", "--input", str(csv_path), "--split", "patient", "--n-splits", "3"],
+    )
+    with pytest.raises(SystemExit, match="patient-level"):
+        validate_main()
+
+
+def test_validate_cli_encounter_mode_keeps_row_semantics(tmp_path, monkeypatch):
+    import csv
+    import json
+
+    from scripts.validate import main as validate_main
+
+    csv_path = tmp_path / "rows.csv"
+    rows = _staggered_patient_rows()
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["validate.py", "--input", str(csv_path), "--split", "encounter", "--n-splits", "3"],
+    )
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        validate_main()
+    report = json.loads(buffer.getvalue())
+    assert report["split_mode"] == "encounter"

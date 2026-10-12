@@ -120,7 +120,9 @@ def resolve_group_column(rows: list[dict], requested: str = "patient_id") -> str
         return requested
     if requested == "patient_id" and any(str(row.get("encounter_id", "") or "") for row in rows):
         return "encounter_id"
-    raise ValueError(f"patient-level split needs a {requested} column (or encounter_id)")
+    if requested == "patient_id":
+        raise ValueError(f"patient-level split needs a {requested} column (or encounter_id)")
+    raise ValueError(f"patient-level split needs a {requested} column")
 
 
 def payload_from_row(row) -> dict:

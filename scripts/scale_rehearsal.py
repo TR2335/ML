@@ -84,15 +84,37 @@ def run(args: argparse.Namespace) -> dict:
     steps: list[dict] = []
     started = time.perf_counter()
 
+    group_budget = {name: budget for name, budget, _keys in GROUPS}
+
     def run_step(name: str, group: str, argv: list[str]):
         step_started = time.perf_counter()
-        proc = subprocess.run(
-            [sys.executable, *argv],
-            capture_output=True,
-            text=True,
-            cwd=root,
-            check=False,
-        )
+        # 挂死保护（M6）：预算仅事后标记，超时硬中断（组预算×2，下限 10 分钟）。
+        timeout = max(group_budget.get(group, 300) * 2, 600)
+        try:
+            proc = subprocess.run(
+                [sys.executable, *argv],
+                capture_output=True,
+                text=True,
+                cwd=root,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = exc.stderr or ""
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", errors="replace")
+            steps.append(
+                {
+                    "name": name,
+                    "group": group,
+                    "seconds": round(time.perf_counter() - step_started, 2),
+                    "exit_code": None,
+                    "ok": False,
+                    "error": f"timeout after {timeout}s",
+                    "stderr_tail": stderr[-2000:],
+                }
+            )
+            raise SystemExit(f"scale_rehearsal: step {name} timed out after {timeout}s") from exc
         entry: dict = {
             "name": name,
             "group": group,
@@ -279,7 +301,9 @@ def run(args: argparse.Namespace) -> dict:
     checks: dict = {
         "leakage": {
             "status": "pass" if leakage_ok else "fail",
-            "violations": 0 if leakage_ok else "patient split unavailable or wrong mode",
+            # violations 恒为 int（机读 schema 稳定，M7）；失败原因放 reason。
+            "violations": 0 if leakage_ok else None,
+            **({} if leakage_ok else {"reason": "patient split unavailable or wrong mode"}),
         },
         "gates": {
             key: bool((gate_reports[key] or {}).get("passed"))
@@ -306,9 +330,14 @@ def run(args: argparse.Namespace) -> dict:
     }
     det_rows = (cohort.get("deterioration") or {}).get("rows")
     facilities = cohort.get("facilities") or {}
+    patients = cohort.get("patients")
+    # 患者数核对（spec §4.5 第 4 条，M4）：round(scale × 0.82)，±1 容差（R-RS-1 公式）。
+    expected_patients = round(args.scale * 0.82)
     scale_ok = (
         cohort.get("scale") == args.scale
         and det_rows == args.scale * 16
+        and patients is not None
+        and abs(patients - expected_patients) <= 1
         and len(facilities) == 3
         and all(count > 0 for count in facilities.values())
     )
@@ -316,6 +345,8 @@ def run(args: argparse.Namespace) -> dict:
         "status": "pass" if scale_ok else "fail",
         "scale": cohort.get("scale"),
         "deterioration_rows": det_rows,
+        "patients": patients,
+        "expected_patients": expected_patients,
         "facilities": facilities,
         "holdout_rows": holdout_rows,
     }

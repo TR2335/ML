@@ -143,7 +143,12 @@ def main() -> None:
         ks = compute_ks(sample, column)
         entry: dict = {"psi": psi, "ks": ks}
         if ks is None:
-            entry["ks_reason"] = "no reference sample" if not sample else "no valid values"
+            if sample is None:
+                entry["ks_reason"] = "no reference sample"
+            elif len(sample) == 0:
+                entry["ks_reason"] = "empty reference sample"
+            else:
+                entry["ks_reason"] = "no valid values"
         entry["alert"] = drift_alert(psi, ks, args.ks_threshold)
         report["features"][feature] = entry
         report["alert"] = report["alert"] or entry["alert"]

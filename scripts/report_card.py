@@ -23,6 +23,7 @@ from app.risk import RiskEngine
 from app.synthetic import FEATURES
 from scripts.baselines import lace_score, news2_score
 from scripts.evaluate_model import (
+    _row_time,
     binary_metrics,
     evaluate_rows,
     payload_from_row,
@@ -51,6 +52,10 @@ SECTION_NAMES = (
     "runtime",
 )
 DEFAULT_SEED = 20261012
+# 基线判阳阈值（R-FIX-1）：NEWS2 high=7/15；LACE≥4 为 Austin 2010 常用截断（/19 归一化）。
+# 基线分数必须在 [0,1]——原始 0–19 分直入 binary_metrics 会让 ECE/Brier/灵敏度全部失真。
+BASELINE_THRESHOLDS = {"news2": 7 / 15, "lace": 4 / 19}
+LACE_MAX = 19
 META_PROFILE_EXCLUDE = {
     "label",
     "patient_id",
@@ -131,7 +136,8 @@ def _baseline_scores(oof_rows: list[dict], target_id: str) -> tuple[str, list[fl
             scores.append(news2_score(payload)[0] / 15)
         return "news2", scores
     try:
-        return "lace", [float(lace_score(payload_from_row(row))) for row in oof_rows]
+        # 归一化到 [0,1]（R-FIX-1）：与 NEWS2/15 同一量纲，非概率分数的口径与既有 NEWS2 列一致。
+        return "lace", [float(lace_score(payload_from_row(row))) / LACE_MAX for row in oof_rows]
     except ValueError:
         return None
 
@@ -210,29 +216,61 @@ def build_report_card(
         except ValueError as exc:
             raise SystemExit(f"report_card: {exc}") from exc
     else:
-        folds = rolling_time_split(rows, n_splits)
+        try:
+            folds = rolling_time_split(rows, n_splits)
+        except ValueError as exc:
+            raise SystemExit(f"report_card: {exc}") from exc
     oof_rows: list[dict] = []
     oof_labels: list[int] = []
     oof_scores: list[float] = []
     fold_details: list[dict] = []
+    # fit 窗重叠披露（终审 R-FIX-2）：train_model fit 于全量行按 index_time 的前 60%
+    # （P6 R4）；OOF 折与其重叠的 test 行是部分代入（in-sample），判别指标偏乐观。
+    # promote 门禁与演练 sanity 用尾 20% holdout（fit/cal 之外），passed 判定不受影响。
+    ordered_times = sorted(_row_time(row) for row in rows)
+    fit_cutoff = ordered_times[int(len(ordered_times) * 0.6)]
     for train, test in folds:
         fold_labels, fold_scores = evaluate_rows(test, engine, label_column)
         oof_rows.extend(test)
         oof_labels.extend(fold_labels)
         oof_scores.extend(fold_scores)
+        in_fit = sum(1 for row in test if _row_time(row) <= fit_cutoff)
         fold_details.append(
             {
                 "train_rows": len(train),
                 "test_rows": len(test),
                 "train_patients": _distinct_groups(train),
                 "test_patients": _distinct_groups(test),
+                "test_rows_in_fit_window": in_fit,
+                "test_rows_beyond_fit_window": len(test) - in_fit,
                 "evaluation": binary_metrics(fold_labels, fold_scores, threshold),
             }
         )
     sections.append(
         _section(
             "split_strategy",
-            {"mode": split_mode, "n_splits": n_splits, "folds": fold_details},
+            {
+                "mode": split_mode,
+                "n_splits": n_splits,
+                "fit_window": {
+                    "definition": (
+                        "train_model fits the earliest 60% of rows by index_time "
+                        "(P6 R4); overlapping OOF test rows are partially in-sample"
+                    ),
+                    "fit_cutoff": fit_cutoff.isoformat(),
+                    "note": (
+                        "promotion gate uses the tail-20% holdout (fully unseen); "
+                        "report-card discrimination over the full input is optimistic "
+                        "where test rows fall inside the fit window"
+                    ),
+                },
+                "ordering": (
+                    "patient-time ordering (patient first index_time); row-level times "
+                    "may interleave across folds — repeat admissions of the same "
+                    "patient stay together by design"
+                ),
+                "folds": fold_details,
+            },
         )
     )
 
@@ -258,6 +296,9 @@ def build_report_card(
                     "hi": hi,
                     "n": n_bootstrap,
                     "replicate_subsample": max_rows,
+                    # validate.py 固定 seed=20260928（历史口径）；报告卡用运行 seed——
+                    # 两者 CI 数字允许不同源，机读字段可比对（M5）。
+                    "seed": seed,
                 },
             },
         )
@@ -286,8 +327,14 @@ def build_report_card(
         baseline_auprc: float | None = None
     else:
         baseline_name, baseline_scores = baseline
-        baseline_metrics = binary_metrics(oof_labels, baseline_scores, 7 / 15)
-        comparison["baseline"] = {"name": baseline_name, "metrics": baseline_metrics}
+        baseline_metrics = binary_metrics(
+            oof_labels, baseline_scores, BASELINE_THRESHOLDS[baseline_name]
+        )
+        comparison["baseline"] = {
+            "name": baseline_name,
+            "threshold": BASELINE_THRESHOLDS[baseline_name],
+            "metrics": baseline_metrics,
+        }
         baseline_auprc = baseline_metrics["auprc"]
     comparison["model_with_news2"] = {
         "status": "skipped",

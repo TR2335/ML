@@ -314,7 +314,10 @@ def main() -> None:
         except ValueError as exc:
             raise SystemExit(f"validate: {exc}") from exc
     else:
-        folds = rolling_time_split(rows, args.n_splits)
+        try:
+            folds = rolling_time_split(rows, args.n_splits)
+        except ValueError as exc:
+            raise SystemExit(f"validate: {exc}") from exc
     fold_reports = []
     oof_labels: list[int] = []
     oof_scores: list[float] = []

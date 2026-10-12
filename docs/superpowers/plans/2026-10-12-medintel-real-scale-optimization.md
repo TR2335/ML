@@ -72,6 +72,16 @@
 - KS 固定效应量阈值在 n≈300 输入下接近统计临界（R-RS-14）：小批量场景建议调大 `--ks-threshold` 或加大批量。
 - 报告卡 `_decile_calibration` 是展示表（非门禁指标）；十分位口径与 `_expected_calibration_error` 固定宽分箱不同源。
 - 演练 promote 的 C 选择 CV 见过 holdout 标签（沿用 P6 R4 既有行为，isotonic/fit 仍只用前 80%）。
+- 演练失败路径可读到上次成功的 `eval.json`/`cohort_stats.json`（陈旧产物）；总 `passed` 由 `steps_ok` 兜底仍为 False，仅报告字段失真（终审 M2，修复成本=run 起始清理或 mtime 校验）。
+- `_drift_reference` 的 lo/hi/proportions 仍按全量矩阵计算（含尾 20% 段）；`sample` 抽样 seed 已接 `--seed`（终审 M1 的 seed 半边已修，train-段口径待裁定）。
+
+## 终审与修复轮（2026-10-12）
+
+- 终审（全新上下文 opus reviewer，diff `96b4140..HEAD`）：**0 Critical / 2 Important / 12 Minor**；全量测试与 ruff 复现通过。
+- **Important 已修（唯一修复轮）**：① 报告卡 LACE 基线归一化 `/19` + 阈值 `4/19`（`BASELINE_THRESHOLDS`；修复前 25k 真实产物 ece=5.32 定义失真）+ readmission 报告卡回归测试；② `split_strategy` 披露 fit 窗（前 60% 时间行）与逐折 `test_rows_in_fit_window/Beyond`（25k 实测 50.4% OOF 行落在 fit 段的乐观偏差留痕；门禁/ sanity 用尾 20% holdout 不受影响）。
+- **Minor 已修 9 项**：drift sample 接 `--seed`、scale_sanity 患者数核对、run_step 超时硬中断、leakage violations 机读类型稳定、resolve 文案分支、ks_reason 区分空样本、encounter 分支 SystemExit 包装（validate+report_card）、split_strategy 行级时间交错说明、bootstrap_ci 记 seed。
+- **Minor 入 deferred 2 项**：陈旧产物（M2）、drift reference 全量口径（M1 后半）。
+- 修复轮后基线：**196 passed + 1 skipped + 2 deselected**；ruff 全零。
 
 ## 验证与收尾
 

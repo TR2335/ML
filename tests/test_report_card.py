@@ -197,3 +197,139 @@ def test_report_card_decision_curve_and_thresholds_present(tmp_path):
     assert set(thresholds["data"]["bands"]) == {"medium", "high", "critical"}
     for band in thresholds["data"]["bands"].values():
         assert {"threshold", "sensitivity", "specificity", "ppv"} <= set(band)
+
+
+def test_report_card_split_strategy_discloses_fit_window(tmp_path):
+    """终审 Important-2：OOF 折与 fit 窗（前 60% 时间行）的重叠逐折留痕（R-FIX-2）。"""
+    report, _md = _run_report_card(tmp_path)
+    split = _section(report, "split_strategy")
+    fit = split["data"]["fit_window"]
+    assert "60%" in fit["definition"]
+    assert fit["fit_cutoff"]
+    assert "holdout" in fit["note"]
+    assert "interleave" in split["data"]["ordering"]  # 患者时点序 ≠ 行级时间序（M3）
+    for fold in split["data"]["folds"]:
+        in_fit = fold["test_rows_in_fit_window"]
+        beyond = fold["test_rows_beyond_fit_window"]
+        assert in_fit + beyond == fold["test_rows"]
+    # 报告卡 bootstrap 记录 seed（M5：与 validate 20260928 的差异可机读比对）
+    discrimination = _section(report, "discrimination")
+    assert discrimination["data"]["bootstrap_ci"]["seed"] == 20261012
+
+
+def _write_readmission_artifact(path: Path) -> None:
+    from app.features import READMISSION_FEATURES
+
+    weights = {feature: 0.0 for feature in READMISSION_FEATURES}
+    weights["comorbidity_index"] = 6.0
+    preprocess = {
+        feature: {"median": 0.0, "mean": 0.0, "std": 1.0} for feature in READMISSION_FEATURES
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "model_version": "rc-rm-v1",
+                "target_id": "readmission_30d",
+                "algorithm": "logistic_regression_sklearn",
+                "feature_names": READMISSION_FEATURES,
+                "feature_order": READMISSION_FEATURES,
+                "preprocess": preprocess,
+                "calibration": None,
+                "weights": weights,
+                "bias": -17.9,
+                "thresholds": {"medium": 0.15, "high": 0.3, "critical": 0.55},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_report_card_readmission_lace_baseline_normalized(tmp_path):
+    """终审 Important-1：LACE 归一化 [0,1]（/19）+ 阈值 4/19，ece/brier 恢复可读（R-FIX-1）。
+
+    终审实证：修复前真实 25k 报告卡 ece=5.32（ECE>1 定义上不可能）、brier=38。
+    """
+    import csv as csv_module
+    from io import StringIO
+
+    from scripts.report_card import main as report_main
+
+    artifact = tmp_path / "rm-model.json"
+    rows_csv = tmp_path / "rm-rows.csv"
+    _write_readmission_artifact(artifact)
+    buffer = StringIO()
+    writer = csv_module.writer(buffer)
+    writer.writerow(
+        [
+            "encounter_id",
+            "patient_id",
+            "index_time",
+            "label",
+            "los_days",
+            "prior_utilization_12m",
+            "comorbidity_index",
+            "ed_visits_6m",
+            "diagnosis_codes",
+            "discharge_destination",
+            "age",
+        ]
+    )
+    for i in range(24):
+        comorbidity = round(0.25 * i, 2)
+        label = int(comorbidity >= 3.0)
+        writer.writerow(
+            [
+                f"enc-{i + 1:04d}",
+                f"pat-{i // 3:03d}",
+                f"2025-05-01T{i:02d}:00:00+00:00",
+                label,
+                2.0,
+                1,
+                comorbidity,
+                1,
+                "[]",
+                "home",
+                50 + i,
+            ]
+        )
+    rows_csv.write_text(buffer.getvalue(), encoding="utf-8")
+    output = tmp_path / "rm-report"
+    old_argv = sys.argv
+    sys.argv = [
+        "report_card.py",
+        "--input",
+        str(rows_csv),
+        "--target-id",
+        "readmission_30d",
+        "--model",
+        str(artifact),
+        "--output",
+        str(output),
+        "--n-splits",
+        "3",
+    ]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            report_main()
+    finally:
+        sys.argv = old_argv
+    report = json.loads(Path(str(output) + ".json").read_text(encoding="utf-8"))
+    baseline = _section(report, "baseline_comparison")["data"]["baseline"]
+    assert baseline["name"] == "lace"
+    metrics = baseline["metrics"]
+    assert metrics["ece"] is not None and 0.0 <= metrics["ece"] <= 1.0
+    assert metrics["brier"] is not None and 0.0 <= metrics["brier"] <= 1.0
+    assert metrics["sensitivity"] is not None and 0.0 <= metrics["sensitivity"] <= 1.0
+    assert 0.0 <= (metrics["auprc"] or 0.0) <= 1.0
+    # 分数源归一化：LACE 原始分（0–19）/19 后进入 0–1 区间（终审 R-FIX-1）
+    from scripts.baselines import lace_score
+    from scripts.evaluate_model import payload_from_row
+
+    with rows_csv.open(newline="", encoding="utf-8") as handle:
+        first = next(csv_module.DictReader(handle))
+    expected = lace_score(payload_from_row(first)) / 19
+    # 阈值口径：LACE≥4 文献截断 → 4/19（而非 NEWS2 的 7/15）
+    from scripts.report_card import BASELINE_THRESHOLDS
+
+    assert BASELINE_THRESHOLDS["lace"] == 4 / 19
+    assert 0.0 <= expected <= 1.0

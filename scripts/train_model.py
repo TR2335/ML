@@ -506,7 +506,7 @@ def main() -> None:
     x = np.asarray(matrix, dtype=float)
     y = np.asarray(labels, dtype=int)
     feature_names = feature_names_for(args.target_id)
-    drift_reference = _drift_reference(matrix, feature_names)
+    drift_reference = _drift_reference(matrix, feature_names, seed=args.seed)
     # 校准段选择（Review I2 链）：60-80% 时间段单类（demo 阳性集中在前半段）时回退
     # train 段——val 段（80-100%）标签始终不进校准器；再单类才兜底全量。
     if len(set(y[cal_window])) < 2:

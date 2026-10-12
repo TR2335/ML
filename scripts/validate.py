@@ -229,24 +229,43 @@ def per_facility_auprc(
     return {"checked": True, "worst": worst, "failures": failures}
 
 
+def decision_curve_table(
+    labels: list[int],
+    scores: list[float],
+    grid: list[float] | None = None,
+) -> list[dict]:
+    """每阈值 NB_model / NB_all / net_gain 表（Ruling R-P7-8 的数据源，报告卡复用）。"""
+    if not labels or not sum(labels):
+        raise ValueError("decision curve needs labels and at least one positive")
+    thresholds = grid or [round(0.10 + 0.05 * i, 2) for i in range(17)]
+    prevalence = sum(labels) / len(labels)
+    table: list[dict] = []
+    for threshold in thresholds:
+        tp = sum(1 for score, label in zip(scores, labels) if score >= threshold and label == 1)
+        fp = sum(1 for score, label in zip(scores, labels) if score >= threshold and label == 0)
+        nb_model = tp / len(labels) - (fp / len(labels)) * (threshold / (1 - threshold))
+        nb_all = prevalence - (1 - prevalence) * (threshold / (1 - threshold))
+        table.append(
+            {
+                "threshold": threshold,
+                "tp": tp,
+                "fp": fp,
+                "nb_model": nb_model,
+                "nb_all": max(nb_all, 0.0),
+                "net_gain": nb_model - max(nb_all, 0.0),
+            }
+        )
+    return table
+
+
 def decision_curve_mean_gain(
     labels: list[int],
     scores: list[float],
     grid: list[float] | None = None,
 ) -> float:
     """mean(NB_model − max(NB_treat_all, 0))（Ruling R-P7-8）。"""
-    if not labels or not sum(labels):
-        raise ValueError("decision curve needs labels and at least one positive")
-    thresholds = grid or [round(0.10 + 0.05 * i, 2) for i in range(17)]
-    prevalence = sum(labels) / len(labels)
-    gains = []
-    for threshold in thresholds:
-        tp = sum(1 for score, label in zip(scores, labels) if score >= threshold and label == 1)
-        fp = sum(1 for score, label in zip(scores, labels) if score >= threshold and label == 0)
-        nb_model = tp / len(labels) - (fp / len(labels)) * (threshold / (1 - threshold))
-        nb_all = prevalence - (1 - prevalence) * (threshold / (1 - threshold))
-        gains.append(nb_model - max(nb_all, 0.0))
-    return sum(gains) / len(gains)
+    table = decision_curve_table(labels, scores, grid)
+    return sum(row["net_gain"] for row in table) / len(table)
 
 
 def main() -> None:

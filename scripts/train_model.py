@@ -151,6 +151,62 @@ def build_demo_dataset(
     return rows, matrix, labels
 
 
+def load_dataset_csv(path: Path, target_id: str) -> tuple[list[dict], list[list[float]], list[int]]:
+    """规模 dataset CSV → build_demo_dataset 同构的 (times, matrix, labels)（R-RS-12）。
+
+    deterioration：21 维 = 10 原始体征列（空→NaN）+ 由空值推导的 __missing 指示
+    （serving R2 同语义）+ news2_score 列——与 _features_before 逐位一致。
+    readmission：6 源字段列 → encode_readmission_payload（训练/serving 唯一编码源）。
+    """
+    import csv
+
+    from app.features import READMISSION_PAYLOAD_KEYS, encode_readmission_payload
+
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        raise SystemExit(f"train_model: empty input CSV: {path}")
+    times: list[dict] = []
+    matrix: list[list[float]] = []
+    labels: list[int] = []
+    for index, row in enumerate(rows, start=1):
+        raw_label = row.get("label", "")
+        try:
+            label = int(raw_label)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(f"train_model: row {index}: label must be 0 or 1") from exc
+        if label not in (0, 1):
+            raise SystemExit(f"train_model: row {index}: label must be 0 or 1")
+        index_time = row.get("index_time", "")
+        if not index_time:
+            raise SystemExit(f"train_model: row {index}: missing index_time")
+        times.append({"index_time": index_time})
+        labels.append(label)
+        if target_id == "deterioration_24h":
+            base: list[float] = []
+            for feature in FEATURES:
+                raw = row.get(feature, "")
+                try:
+                    base.append(float(raw) if raw not in ("", None) else math.nan)
+                except (TypeError, ValueError) as exc:
+                    raise SystemExit(
+                        f"train_model: row {index}: {feature} must be numeric or empty"
+                    ) from exc
+            indicators = [1.0 if math.isnan(value) else 0.0 for value in base]
+            raw_news2 = row.get("news2_score", "")
+            try:
+                news2 = float(raw_news2) if raw_news2 not in ("", None) else math.nan
+            except (TypeError, ValueError) as exc:
+                raise SystemExit(
+                    f"train_model: row {index}: news2_score must be numeric or empty"
+                ) from exc
+            matrix.append([*base, *indicators, news2])
+        else:
+            payload = {name: row.get(name, "") for name in READMISSION_PAYLOAD_KEYS}
+            matrix.append(encode_readmission_payload(payload))
+    return times, matrix, labels
+
+
 def _fit_pipeline(
     times: list[dict], matrix: list[list[float]], labels: list[int]
 ) -> tuple[Pipeline, float]:
@@ -422,8 +478,17 @@ def main() -> None:
     )
     parser.add_argument("--trials", type=int, default=100, help="Optuna 试验数（Ruling R-P7-4）")
     parser.add_argument("--seed", type=int, default=20261010, help="Optuna/采样种子")
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help="规模 dataset CSV（G1 产物）；缺省走 build_demo_dataset 演示管道，--rows 被忽略",
+    )
     args = parser.parse_args()
-    times, matrix, labels = build_demo_dataset(args.target_id, args.rows)
+    if args.input is not None:
+        times, matrix, labels = load_dataset_csv(args.input, args.target_id)
+    else:
+        times, matrix, labels = build_demo_dataset(args.target_id, args.rows)
     order = sorted(range(len(times)), key=lambda i: times[i]["index_time"])
     n = len(order)
     train_idx = order[: int(n * 0.6)]

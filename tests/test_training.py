@@ -215,3 +215,155 @@ def test_readmission_uses_isotonic_calibration(tmp_path):
     assert all(a < b for a, b in pairwise(xs))
     assert all(a <= b for a, b in pairwise(ys))
     assert calibration["fitted_on"] == "cal_segment"
+
+
+def test_load_dataset_csv_matches_features_before(tmp_path):
+    """规模 CSV 的 21 维映射必须与 serving 同源 _features_before 逐位一致（R-RS-12）。"""
+    import math
+
+    from app.synthetic import FEATURES
+    from scripts.baselines import news2_score
+    from scripts.train_model import _features_before, load_dataset_csv
+
+    present = {
+        "age": 70.0,
+        "respiratory_rate": 18.0,
+        "systolic_bp": 110.0,
+        "temperature": 37.2,
+        "spo2": 96.0,
+        "wbc": 9.1,
+        "creatinine": 1.3,
+        "prior_admissions_30d": 1.0,
+        # heart_rate、lactate 缺失（CSV 留空）
+    }
+    vitals_subset = {
+        key: present[key]
+        for key in ("respiratory_rate", "spo2", "systolic_bp", "heart_rate", "temperature")
+        if key in present
+    }
+    news2 = news2_score(vitals_subset)[0]
+    csv_path = tmp_path / "det.csv"
+    header = ["encounter_id", "patient_id", "index_time", "label", *FEATURES, "news2_score"]
+    values = ["" if feature not in present else str(present[feature]) for feature in FEATURES]
+    csv_path.write_text(
+        ",".join(header)
+        + "\n"
+        + ",".join(
+            [
+                "enc-001",
+                "pat-1",
+                "2025-06-01T08:00:00+00:00",
+                "1",
+                *values,
+                str(news2),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    times, matrix, labels = load_dataset_csv(csv_path, "deterioration_24h")
+    expected = _features_before(dict(present))
+    actual = matrix[0]
+    assert len(actual) == 21 == len(expected)
+    for got, want in zip(actual, expected):
+        if math.isnan(want):
+            assert math.isnan(got)
+        else:
+            assert got == want
+    assert labels == [1]
+    assert times == [{"index_time": "2025-06-01T08:00:00+00:00"}]
+
+
+def test_load_dataset_csv_readmission_encodes_payload(tmp_path):
+    import csv as csv_module
+    from io import StringIO
+
+    from app.features import READMISSION_PAYLOAD_KEYS, encode_readmission_payload
+    from scripts.train_model import load_dataset_csv
+
+    csv_path = tmp_path / "rm.csv"
+    header = ["encounter_id", "patient_id", "index_time", "label", *READMISSION_PAYLOAD_KEYS]
+    row = [
+        "enc-1",
+        "pat-1",
+        "2025-06-01T10:00:00+00:00",
+        "1",
+        "3.5",
+        "2",
+        "4.5",
+        "1",
+        '["D00","D01","D02"]',
+        "snf",
+    ]
+    # csv.writer 正确引用含逗号的 JSON 字段（与 G1 产物同一写法）
+    buffer = StringIO()
+    writer = csv_module.writer(buffer)
+    writer.writerow(header)
+    writer.writerow(row)
+    csv_path.write_text(buffer.getvalue(), encoding="utf-8")
+    times, matrix, labels = load_dataset_csv(csv_path, "readmission_30d")
+    raw = dict(zip(READMISSION_PAYLOAD_KEYS, row[4:], strict=True))
+    assert matrix[0] == encode_readmission_payload(raw)
+    assert labels == [1]
+    assert times == [{"index_time": "2025-06-01T10:00:00+00:00"}]
+
+
+def test_train_cli_with_input_writes_artifact(tmp_path):
+    """--input 规模路径：读 dataset CSV 训练，工件契约与 demo 路径一致。"""
+    from app.synthetic import FEATURES
+
+    csv_path = tmp_path / "ds.csv"
+    header = ["encounter_id", "patient_id", "index_time", "label", *FEATURES, "news2_score"]
+    lines = [",".join(header)]
+    for i in range(40):
+        cells = []
+        for feature in FEATURES:
+            if feature == "heart_rate" and i % 7 == 0:
+                cells.append("")  # 制造缺失 → 指示列与 imputer 路径
+            elif feature == "age":
+                cells.append(str(40 + i % 45))
+            elif feature == "prior_admissions_30d":
+                cells.append(str(i % 3))
+            else:
+                cells.append(str(round(50 + (i * 7 % 60) + len(feature), 1)))
+        lines.append(
+            ",".join(
+                [
+                    f"enc-{i + 1:05d}",
+                    f"pat-{i + 1:05d}",
+                    f"2025-03-01T{i % 24:02d}:00:00+00:00",
+                    str(int(i % 3 == 0)),
+                    *cells,
+                    str(3 + i % 5),
+                ]
+            )
+        )
+    csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    output = str(tmp_path / "model.json")
+    old_argv = sys.argv
+    sys.argv = [
+        "train_model.py",
+        "--input",
+        str(csv_path),
+        "--output",
+        output,
+        "--target-id",
+        "deterioration_24h",
+        "--version",
+        "scale-in-v1",
+    ]
+    try:
+        with contextlib.redirect_stdout(open(str(tmp_path / "train.log"), "w", encoding="utf-8")):
+            from scripts.train_model import main as train_main
+
+            train_main()
+    finally:
+        sys.argv = old_argv
+    artifact = json.loads(Path(output).read_text(encoding="utf-8"))
+    assert artifact["model_version"] == "scale-in-v1"
+    assert artifact["training_rows"] == 40
+    assert artifact["feature_order"] == [
+        *FEATURES,
+        *[f"{feature}__missing" for feature in FEATURES],
+        "news2_score",
+    ]

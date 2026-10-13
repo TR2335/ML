@@ -432,6 +432,52 @@ def test_promote_gate_rejects_missing_group_keys(tmp_path):
     assert not (registry / "manifest.json").exists()
 
 
+def test_promote_gate_rejects_holdout_missing_lace_field(tmp_path):
+    """P8 deferred 6：holdout 缺 LACE 必需字段 → SystemExit 统一拒绝语、不留 manifest
+    （单元级 lace_score 测试已有，缺 promote→SystemExit 集成链）。"""
+    import pytest
+
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "readmission.json"
+    _write_lace_artifact(artifact, "lace-missing-v1")
+    holdout = tmp_path / "holdout.csv"
+    # 同 _write_lace_rows 的行模板，但删掉 ed_visits_6m 列
+    header = (
+        "encounter_id,los_days,prior_utilization_12m,comorbidity_index,"
+        "diagnosis_codes,discharge_destination,label"
+    )
+    lines = [header]
+    for i in range(24):
+        comorbidity = round(0.25 * i, 2)
+        label = int(comorbidity >= 3.0)
+        lines.append(f"enc-{i + 1:04d},2.0,0,{comorbidity},[],home,{label}")
+    holdout.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    registry = tmp_path / "registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "readmission_30d",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        with pytest.raises(
+            SystemExit,
+            match="promotion gate rejected: lace fields missing/invalid: ed_visits_6m",
+        ):
+            manage_main()
+    finally:
+        sys.argv = old_argv
+    assert not (registry / "manifest.json").exists()
+
+
 def test_load_artifact_accepts_legacy_vitals_readmission_artifact(tmp_path):
     """P8 deferred 3：readmission 白名单半边（旧 vitals 形态）必须有回归测试。"""
     from app.synthetic import FEATURES

@@ -570,6 +570,52 @@ def test_discharge_event_scores_readmission_exactly_once(tmp_path):
         assert readmission.as_of == datetime(2026, 9, 9, 10, 0, tzinfo=UTC)
 
 
+def test_second_discharge_event_does_not_rescore_readmission_api(tmp_path):
+    """P8 deferred 4：API live 路径与 worker/批路径一致——第二个出院事件不返回
+    readmission、不改写 as_of（deterioration 照常更新）。"""
+    application = create_app(
+        Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))
+    )
+    headers = {"Authorization": "Bearer demo-clinician-token"}
+    first_discharge = {
+        "event_id": "evt-d1",
+        "event_type": "discharge",
+        "patient_id": "pat-001",
+        "encounter_id": "enc-001",
+        "occurred_at": "2026-09-09T10:00:00Z",
+        "payload": {
+            "discharge_destination": "home",
+            "los_days": 4.0,
+            "diagnosis_codes": ["I50.9"],
+            "comorbidity_index": 1.0,
+            "prior_utilization_12m": 0,
+            "ed_visits_6m": 1,
+        },
+    }
+    second_discharge = {
+        **first_discharge,
+        "event_id": "evt-d2",
+        "occurred_at": "2026-09-11T10:00:00Z",
+        "payload": {**first_discharge["payload"], "los_days": 6.0},
+    }
+    with TestClient(application) as client:
+        first = client.post("/api/events", json=first_discharge, headers=headers)
+        assert first.status_code == 202
+        assert set(first.json()["scores"]) == {"deterioration_24h", "readmission_30d"}
+        second = client.post("/api/events", json=second_discharge, headers=headers)
+        assert second.status_code == 202
+        # deterioration 逐事件重打（响应即为当次计算结果，as_of 钉 d2）；
+        # readmission 单次评分不重打（响应不含该目标）
+        assert set(second.json()["scores"]) == {"deterioration_24h"}
+        assert second.json()["scores"]["deterioration_24h"]["as_of"].startswith("2026-09-11")
+    from app.store import Store
+
+    with Store(str(tmp_path / "store.db")) as store:
+        readmission = store.get_score("enc-001", "group-demo", "hospital-01", "readmission_30d")
+        assert readmission is not None
+        assert readmission.as_of == datetime(2026, 9, 9, 10, 0, tzinfo=UTC)
+
+
 def test_discharge_event_missing_snapshot_is_422(tmp_path):
     application = create_app(
         Settings(store_path=str(tmp_path / "store.db"), model_path=str(tmp_path / "missing.json"))

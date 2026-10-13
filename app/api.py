@@ -24,11 +24,19 @@ def _degraded_code(reason: str) -> str:
     return "model_artifact_invalid"
 
 
-def score_all_targets(engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> list[RiskScore]:
-    # 按触发策略过滤：readmission 仅出院事件（WBS T8.2）。
+def score_all_targets(
+    store: Store, engines: dict[TargetId, RiskEngine], event: ClinicalEvent
+) -> list[RiskScore]:
+    # 按触发策略过滤：readmission 仅出院事件（WBS T8.2），且仅钉首个出院事件
+    # （P8 deferred 4：与 worker/批路径/契约一致，后续出院事件不重打分）。
+    from .worker import is_first_discharge
+
+    targets = targets_for_event(event)
+    if "readmission_30d" in targets and not is_first_discharge(store, event):
+        targets = [target_id for target_id in targets if target_id != "readmission_30d"]
     return [
         engines[target_id].score(event)
-        for target_id in targets_for_event(event)
+        for target_id in targets
         if target_id in engines
     ]
 
@@ -229,7 +237,8 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
                 )
                 scoring_event = event.model_copy(update={"payload": snapshot})
                 existing_scores = {
-                    score.target_id: score for score in score_all_targets(engines, scoring_event)
+                    score.target_id: score
+                    for score in score_all_targets(store, engines, scoring_event)
                 }
                 for score in existing_scores.values():
                     store.upsert_score(score)
@@ -289,7 +298,7 @@ def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRou
             ),
         )
         scoring_event = event.model_copy(update={"payload": snapshot})
-        scored = score_all_targets(engines, scoring_event)
+        scored = score_all_targets(store, engines, scoring_event)
         for score in scored:
             store.upsert_score(score)
         metrics.inc("medintel_events_scored_total")

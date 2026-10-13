@@ -162,6 +162,55 @@ def test_score_event_discharge_triggers_readmission_only(tmp_path):
         assert readmission.as_of == datetime(2026, 1, 1, 20, 0, tzinfo=UTC)
 
 
+def test_second_discharge_event_does_not_rescore_readmission(tmp_path):
+    """P8 deferred 4：live 与批路径/契约一致——readmission 单次评分、as_of 钉首个
+    出院事件；第二个出院事件不重打分（deterioration 照常随事件更新）。"""
+    settings = Settings(model_path=str(tmp_path / "missing.json"))
+    with Store(str(tmp_path / "store.db")) as store:
+        d1 = ClinicalEvent(
+            event_id="evt-d1",
+            event_type="discharge",
+            patient_id="pat-1",
+            encounter_id="enc-1",
+            occurred_at=datetime(2026, 1, 1, 10, 0, tzinfo=UTC),
+            payload={
+                "discharge_destination": "home",
+                "los_days": 2.0,
+                "diagnosis_codes": [],
+                "comorbidity_index": 0.0,
+                "prior_utilization_12m": 0,
+                "ed_visits_6m": 0,
+            },
+        )
+        d2 = d1.model_copy(
+            update={
+                "event_id": "evt-d2",
+                "occurred_at": datetime(2026, 1, 3, 10, 0, tzinfo=UTC),
+                "payload": {**d1.payload, "los_days": 5.0},
+            }
+        )
+        store.seed(
+            [{"patient_id": "pat-1", "encounter_id": "enc-1", "display_name": "测试患者"}],
+            [d1, d2],
+        )
+        engines = {
+            "deterioration_24h": RiskEngine(settings),
+            "readmission_30d": RiskEngine(settings, target_id="readmission_30d"),
+        }
+        score_event(store, engines, d1)
+        first = store.get_score("enc-1", "group-demo", "hospital-01", "readmission_30d")
+        assert first is not None and first.as_of == d1.occurred_at
+        scored_at_before = first.scored_at
+
+        score_event(store, engines, d2)
+        after = store.get_score("enc-1", "group-demo", "hospital-01", "readmission_30d")
+        assert after.as_of == d1.occurred_at
+        assert after.scored_at == scored_at_before  # 未被重打分
+        # deterioration 仍随第二个出院事件正常重打
+        det = store.get_score("enc-1", "group-demo", "hospital-01", "deterioration_24h")
+        assert det is not None and det.as_of == d2.occurred_at
+
+
 def test_rescore_uses_discharge_time_for_readmission(tmp_path):
     with Store(str(tmp_path / "store.db")) as store:
         discharge = ClinicalEvent(

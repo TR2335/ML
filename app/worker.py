@@ -143,6 +143,22 @@ def reconcile(store: Store, engines: dict[TargetId, RiskEngine]) -> int:
     return count
 
 
+def is_first_discharge(store: Store, event: ClinicalEvent) -> bool:
+    """readmission 单次评分守卫：仅当来的是（已入库、按时间序）首个出院事件才评分。
+
+    契约：readmission `as_of` 钉首个出院事件时刻、单次评分；与批路径
+    `_first_discharge` 口径一致（P8 deferred 4）。事件按到达序处理；乱序到达
+    的边界由 `upsert_score` 防倒退兜底，契约不承诺回改。
+    """
+    discharges = [
+        item
+        for item in store.events_for(event.encounter_id, event.tenant_id, event.facility_id)
+        if item.event_type == "discharge"
+    ]
+    first = min(discharges, key=lambda item: (item.occurred_at, item.event_id))
+    return (first.occurred_at, first.event_id) == (event.occurred_at, event.event_id)
+
+
 def score_event(store: Store, engines: dict[TargetId, RiskEngine], event: ClinicalEvent) -> None:
     """Score one durable event at its event time and persist policy targets."""
     snapshot = store.feature_snapshot(
@@ -152,11 +168,15 @@ def score_event(store: Store, engines: dict[TargetId, RiskEngine], event: Clinic
         as_of=event.occurred_at,
     )
     scoring_event = event.model_copy(update={"payload": snapshot})
-    # 按触发策略过滤：readmission 仅出院事件（WBS T8.2）。
+    # 按触发策略过滤：readmission 仅出院事件（WBS T8.2），且仅钉首个出院事件
+    # （P8 deferred 4：后续出院事件不重打分，与批路径/契约一致）。
     for target_id in targets_for_event(event):
         target_engine = engines.get(target_id)
-        if target_engine is not None:
-            store.upsert_score(target_engine.score(scoring_event))
+        if target_engine is None:
+            continue
+        if target_id == "readmission_30d" and not is_first_discharge(store, event):
+            continue
+        store.upsert_score(target_engine.score(scoring_event))
     metrics.inc("medintel_events_scored_total")
 
 

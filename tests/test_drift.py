@@ -1,6 +1,8 @@
 import json
 import sys
 
+import pytest
+
 
 def test_psi_flags_synthetic_drift():
     from scripts.monitor_drift import compute_psi
@@ -73,8 +75,8 @@ def test_recalibrate_only_updates_calibration_and_gates(tmp_path):
 
     用 readmission 做过门禁半场：字段驱动标签 → 模型排序强于 LACE 分箱（demo
     deterioration 的模型打不过 NEWS2 基线，门禁会正确拒绝——见台账 Task 5）。
-    拒绝半场用全零标签的 --gate-input（"holdout needs at least one positive"，
-    确定性 SystemExit）。
+    拒绝半场用全零标签的 --gate-input（P7 deferred 5 后由 recalibrate 预检拒绝：
+    "recalibrate: gate-input needs both classes"，确定性 SystemExit）。
     """
     import csv as _csv
 
@@ -143,7 +145,8 @@ def test_recalibrate_only_updates_calibration_and_gates(tmp_path):
         1 for row in recal_rows if row["label"] == "1"
     )
 
-    # 不过路径：gate 输入无阳性 → SystemExit 且原件分毫不动
+    # 不过路径：gate 输入无阳性 → SystemExit 且原件分毫不动。
+    # P7 deferred 5：拒绝发生在 recalibrate 的 gate-input 预检处，语出 recalibrate。
     no_positive = tmp_path / "no-positive.csv"
     with no_positive.open("w", newline="", encoding="utf-8") as fh:
         writer = _csv.DictWriter(fh, fieldnames=fields)
@@ -168,11 +171,43 @@ def test_recalibrate_only_updates_calibration_and_gates(tmp_path):
         str(no_positive),
     ]
     try:
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="recalibrate: gate-input needs both classes"):
             recalibrate_main()
     finally:
         sys.argv = old_argv
     assert artifact.read_text(encoding="utf-8") == before_text
+
+
+@pytest.mark.parametrize("bad_label", ["2", "-1", "0.5", "1.0"])
+def test_recalibrate_rejects_non_binary_labels(tmp_path, bad_label):
+    """P7 deferred 8：int("2")==2 曾被放行进校准拟合——严格只收 "0"/"1"。"""
+    from scripts.recalibrate import main as recalibrate_main
+
+    artifact = tmp_path / "rm.json"
+    artifact.write_text(json.dumps({"target_id": "readmission_30d"}), encoding="utf-8")
+    inp = tmp_path / "in.csv"
+    inp.write_text(
+        "encounter_id,label\n"
+        f"enc-0001,{bad_label}\n"
+        "enc-0002,0\n"
+        "enc-0003,1\n",
+        encoding="utf-8",
+    )
+    old_argv = sys.argv
+    sys.argv = [
+        "recalibrate.py",
+        "--artifact",
+        str(artifact),
+        "--input",
+        str(inp),
+        "--target-id",
+        "readmission_30d",
+    ]
+    try:
+        with pytest.raises(SystemExit, match="needs label 0/1"):
+            recalibrate_main()
+    finally:
+        sys.argv = old_argv
 
 
 def test_linear_margin_matches_sigmoid_inverse(tmp_path):

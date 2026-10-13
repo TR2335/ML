@@ -24,6 +24,21 @@ from scripts.manage_model import run_promotion_gate
 from scripts.train_model import _fit_isotonic_block
 
 
+def _validated_labels(rows: list[dict], *, context: str) -> list[int]:
+    """严格 0/1 校验（P7 deferred 8：int("2")==2 曾被放行进校准拟合）。
+    context 进拒绝语，区分 --input 与 gate-input（P7 deferred 5）。"""
+    labels: list[int] = []
+    for index, row in enumerate(rows):
+        raw = row.get("label")
+        text = raw.strip() if isinstance(raw, str) else raw
+        if text not in ("0", "1"):
+            raise SystemExit(f"recalibrate: row {index + 1} needs label 0/1")
+        labels.append(int(text))
+    if not labels or not sum(labels) or sum(labels) == len(labels):
+        raise SystemExit(f"recalibrate: {context} needs both classes")
+    return labels
+
+
 def _margins(engine: RiskEngine, rows: list[dict]) -> list[float]:
     """当前工件的校准前 logit（线性或树路径）。"""
     out: list[float] = []
@@ -62,14 +77,7 @@ def main() -> None:
     artifact = json.loads(original)
     with Path(args.input).open(newline="", encoding="utf-8-sig") as handle:
         rows = list(csv.DictReader(handle))
-    labels = []
-    for index, row in enumerate(rows):
-        try:
-            labels.append(int(row["label"]))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise SystemExit(f"recalibrate: row {index + 1} needs label 0/1") from exc
-    if not labels or not sum(labels) or sum(labels) == len(labels):
-        raise SystemExit("recalibrate: need both classes")
+    labels = _validated_labels(rows, context="--input")
     # 双路径指向给定工件 + 目标显式校验（同 P6 修复轮口径）。
     settings = Settings(
         model_path=str(artifact_path),
@@ -88,13 +96,21 @@ def main() -> None:
     calibration_block = _fit_isotonic_block(margins, labels, fitted_on="recalibration_set")
     candidate = dict(artifact)
     candidate["calibration"] = calibration_block
+    # gate-input 在进门前禁前预检（P7 deferred 5：全零/单类 gate 集在 recalibrate
+    # 输入校验处即拒，而非门禁度量入口）；门禁内部检查保留为其他调用方兜底。
+    gate_path = Path(args.gate_input or args.input)
+    if args.gate_input:
+        try:
+            with gate_path.open(newline="", encoding="utf-8-sig") as handle:
+                gate_rows = list(csv.DictReader(handle))
+        except OSError as exc:
+            raise SystemExit(f"recalibrate: cannot read gate-input: {exc}") from exc
+        _validated_labels(gate_rows, context="gate-input")
     # 门禁在临时工件上跑（Ruling R-P7-10）；不过 → 原件分毫不动。
     with tempfile.TemporaryDirectory() as tmp:
         candidate_path = Path(tmp) / "candidate.json"
         candidate_path.write_text(json.dumps(candidate, ensure_ascii=False), encoding="utf-8")
-        gate_report = run_promotion_gate(
-            candidate_path, args.target_id, Path(args.gate_input or args.input)
-        )
+        gate_report = run_promotion_gate(candidate_path, args.target_id, gate_path)
     artifact_path.write_text(json.dumps(candidate, ensure_ascii=False, indent=2), encoding="utf-8")
     print(
         json.dumps(

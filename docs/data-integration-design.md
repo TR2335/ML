@@ -156,7 +156,7 @@ python scripts/import_clinical_data.py --patients patients.json --events events.
 python scripts/import_clinical_data.py --patients patients.json --events events.json --commit
 ```
 
-summary 输出字段：`patients`、`events`、`commit`、`event_types`；`--commit` 后追加 `accepted_events`、`duplicate_events`（T2.4 落地后中途失败会附 partial summary：accepted/failed 计数 + 最后成功键）。
+summary 输出字段：`patients`、`events`、`discharge_events`、`commit`、`event_types`；`--commit` 后追加 `accepted_events`、`duplicate_events`（T2.4 落地后中途失败会附 partial summary：accepted/failed 计数 + 最后成功键）。
 
 先用演示数据熟悉流程：`python scripts/generate_demo_data.py --reset`。
 

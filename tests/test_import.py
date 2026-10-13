@@ -39,6 +39,54 @@ def test_future_event_rejected(tmp_path, monkeypatch):
         import_main()
 
 
+def test_import_summary_counts_discharge_events(tmp_path, monkeypatch, capsys):
+    """P8 deferred 2：summary 实际含 discharge_events 键——文档与实现对齐并钉住。"""
+    from scripts.import_clinical_data import main as import_main
+
+    patients = _write(
+        tmp_path,
+        "patients.json",
+        [{"patient_id": "pat-1", "encounter_id": "enc-1", "age": 60}],
+    )
+    events = _write(
+        tmp_path,
+        "events.json",
+        [
+            {
+                "event_id": "evt-vitals",
+                "event_type": "vital_signs",
+                "patient_id": "pat-1",
+                "encounter_id": "enc-1",
+                "occurred_at": "2025-06-01T08:00:00Z",
+                "payload": {"heart_rate": 80},
+            },
+            {
+                "event_id": "evt-discharge",
+                "event_type": "discharge",
+                "patient_id": "pat-1",
+                "encounter_id": "enc-1",
+                "occurred_at": "2025-06-02T08:00:00Z",
+                "payload": {
+                    "discharge_destination": "home",
+                    "los_days": 1,
+                    "diagnosis_codes": ["A"],
+                    "comorbidity_index": 0,
+                    "prior_utilization_12m": 0,
+                    "ed_visits_6m": 0,
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["import_clinical_data.py", "--patients", str(patients), "--events", str(events)],
+    )
+    import_main()
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["discharge_events"] == 1
+    assert {"patients", "events", "discharge_events", "commit", "event_types"} <= set(summary)
+
+
 def test_partial_summary_on_failure(tmp_path, monkeypatch, capsys):
     from app.store import Store
     from app.validation import ImportPartialFailure

@@ -216,6 +216,48 @@ def test_readmission_uses_isotonic_calibration(tmp_path):
     assert all(a <= b for a, b in pairwise(ys))
     assert calibration["fitted_on"] == "cal_segment"
 
+    # P7 deferred 6：真 isotonic 分支此前从未被 Brier 不劣化钉住（deterioration
+    # 走的是 R-P7-5a Platt 回退）。评估数据与拟合数据同源（同 seed 同行数重建
+    # → 恰为 cal 段拟合样本）；isotonic 在拟合样本上对任意单调分数不劣化 Brier。
+    import copy
+
+    from app.config import Settings
+    from app.domain import ClinicalEvent
+    from app.features import READMISSION_PAYLOAD_KEYS
+    from app.risk import RiskEngine
+    from scripts.evaluate_model import binary_metrics
+    from scripts.train_model import build_demo_dataset
+
+    payloads, _matrix, raw_labels = build_demo_dataset("readmission_30d", 480)
+    calibrated_engine = RiskEngine(
+        Settings(readmission_model_path=path), target_id="readmission_30d"
+    )
+    raw_artifact = copy.deepcopy(artifact)
+    raw_artifact["calibration"] = None
+    raw_path = tmp_path / "raw_readmission.json"
+    raw_path.write_text(json.dumps(raw_artifact), encoding="utf-8")
+    raw_engine = RiskEngine(
+        Settings(readmission_model_path=str(raw_path)), target_id="readmission_30d"
+    )
+
+    cal_scores: list[float] = []
+    raw_scores: list[float] = []
+    for i, item in enumerate(payloads):
+        payload = {key: item[key] for key in READMISSION_PAYLOAD_KEYS if key in item}
+        event = ClinicalEvent(
+            event_type="discharge",
+            patient_id=f"iso-p-{i}",
+            encounter_id=f"iso-e-{i}",
+            payload=payload,
+        )
+        cal_scores.append(calibrated_engine.score(event).score)
+        raw_scores.append(raw_engine.score(event).score)
+    brier_cal = binary_metrics(raw_labels, cal_scores, calibrated_engine.thresholds["high"])[
+        "brier"
+    ]
+    brier_raw = binary_metrics(raw_labels, raw_scores, raw_engine.thresholds["high"])["brier"]
+    assert brier_cal <= brier_raw + 1e-9
+
 
 def test_load_dataset_csv_matches_features_before(tmp_path):
     """规模 CSV 的 21 维映射必须与 serving 同源 _features_before 逐位一致（R-RS-12）。"""

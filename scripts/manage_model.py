@@ -113,8 +113,11 @@ def run_promotion_gate(
         ),
         target_id=target_id,
     )
-    with input_csv.open(newline="", encoding="utf-8-sig") as handle:
-        rows = list(csv.DictReader(handle))
+    try:
+        with input_csv.open(newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError as exc:
+        raise SystemExit(f"promotion gate rejected: cannot read holdout CSV: {exc}") from exc
     gate_group: str | None = None
     if split_mode == "patient":
         # 门禁数字一律以患者级口径评估（spec §4.2 接入点 3，R-RS-9）：
@@ -123,7 +126,12 @@ def run_promotion_gate(
             gate_group = resolve_group_column(rows)
         except ValueError as exc:
             raise SystemExit(f"promotion gate rejected: {exc}") from exc
-    labels, scores = evaluate_rows(rows, engine, "label")
+    try:
+        labels, scores = evaluate_rows(rows, engine, "label")
+    except (ValueError, KeyError) as exc:
+        # 输入类错误（缺 label 列/非数字/无效 payload）统一拒绝语，不走 traceback
+        # （P6 deferred 7）。
+        raise SystemExit(f"promotion gate rejected: {exc}") from exc
     if not labels or not sum(labels):
         raise SystemExit("promotion gate rejected: holdout needs labels and at least one positive")
 
@@ -136,11 +144,16 @@ def run_promotion_gate(
     )
     if target_id == "deterioration_24h":
         baseline_name = "news2"
-        baseline_scores = [
-            news2_score({f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)})[0]
-            / 15
-            for row in rows
-        ]
+        try:
+            baseline_scores = [
+                news2_score({f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)})[0]
+                / 15
+                for row in rows
+            ]
+        except (TypeError, ValueError, KeyError) as exc:
+            raise SystemExit(
+                f"promotion gate rejected: news2 baseline needs numeric vitals: {exc}"
+            ) from exc
     else:
         # readmission 基线 = LACE（WBS T8.3，Ruling R-P8-6）。
         baseline_name = "lace"
@@ -161,8 +174,19 @@ def run_promotion_gate(
     except ValueError as exc:
         rules["decision_curve"] = {"status": "skipped", "reason": str(exc)}
     ages = [row.get("age", "") for row in rows]
-    if all(age not in ("", None) for age in ages):
-        groups = ["older" if float(age) >= 65 else "younger" for age in ages]
+    numeric_ages: list[float] = []
+    age_complete = True
+    for age in ages:
+        if age in ("", None):
+            age_complete = False
+            break
+        try:
+            numeric_ages.append(float(age))
+        except (TypeError, ValueError):
+            age_complete = False
+            break
+    if age_complete:
+        groups = ["older" if age >= 65 else "younger" for age in numeric_ages]
         diff = subgroup_sensitivity_diff(
             labels, scores, groups, engine.thresholds["high"], min_positives=10
         )
@@ -171,6 +195,12 @@ def run_promotion_gate(
             if diff is None
             else {"status": "pass" if diff <= 0.10 else "fail", "sensitivity_diff": diff}
         )
+    elif any(age not in ("", None) for age in ages):
+        # 列在但值缺失/非数值——与「整列缺失」措辞区分（P7 deferred 1）。
+        rules["subgroup"] = {
+            "status": "skipped",
+            "reason": "age column present but values missing/non-numeric",
+        }
     else:
         rules["subgroup"] = {"status": "skipped", "reason": "age column absent"}
     facility = per_facility_auprc(rows, labels, scores, baseline_auprc)

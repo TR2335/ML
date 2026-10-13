@@ -429,3 +429,125 @@ def test_promote_gate_rejects_missing_group_keys(tmp_path):
     finally:
         sys.argv = old_argv
     assert not (registry / "manifest.json").exists()
+
+
+def _promote_with_holdout(tmp_path, holdout_body: str, version: str):
+    """复用既有 harness 的最小 promote 驱动；返回 registry 路径。"""
+    artifact = tmp_path / f"{version}.json"
+    _write_gate_artifact(artifact, version)
+    holdout = tmp_path / f"{version}.csv"
+    holdout.write_text(holdout_body, encoding="utf-8")
+    registry = tmp_path / f"{version}-registry"
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(holdout),
+    ]
+    try:
+        from scripts.manage_model import main as manage_main
+
+        manage_main()
+    finally:
+        sys.argv = old_argv
+    return registry
+
+
+def test_gate_rejects_input_class_errors_with_unified_message(tmp_path):
+    """P6 deferred 7：缺 label 列 / label 非数字 / 文件不存在 → 统一拒绝语，不留 manifest。"""
+    import pytest
+
+    from scripts.manage_model import main as manage_main
+
+    artifact = tmp_path / "inerr.json"
+    _write_gate_artifact(artifact, "inerr-v1")
+    registry = tmp_path / "registry"
+
+    cases = {
+        "missing_label": "encounter_id,creatinine\nenc-0001,3.0\nenc-0002,0.8\n",
+        "non_numeric_label": (
+            "encounter_id,creatinine,label\n"
+            + ("enc-0001,3.0,x\nenc-0002,0.8,0\n" * 8)
+        ),
+        # age 是模型特征：非数值 age 在行级构造事件即为无效行 → 统一拒绝语
+        # （P7 deferred 1 裁定：不可降级为 subgroup skipped）
+        "non_numeric_age": (
+            "encounter_id,creatinine,label,age\n"
+            + ("enc-0001,3.0,1,abc\nenc-0002,0.8,0,70\n" * 8)
+        ),
+    }
+    for name, body in cases.items():
+        holdout = tmp_path / f"{name}.csv"
+        holdout.write_text(body, encoding="utf-8")
+        old_argv = sys.argv
+        sys.argv = [
+            "manage_model.py",
+            "--registry-dir",
+            str(registry),
+            "promote",
+            "--artifact",
+            str(artifact),
+            "--target-id",
+            "deterioration_24h",
+            "--input",
+            str(holdout),
+        ]
+        try:
+            with pytest.raises(SystemExit, match="promotion gate rejected"):
+                manage_main()
+        finally:
+            sys.argv = old_argv
+        assert not (registry / "manifest.json").exists()
+
+    # 文件不存在
+    old_argv = sys.argv
+    sys.argv = [
+        "manage_model.py",
+        "--registry-dir",
+        str(registry),
+        "promote",
+        "--artifact",
+        str(artifact),
+        "--target-id",
+        "deterioration_24h",
+        "--input",
+        str(tmp_path / "nope.csv"),
+    ]
+    try:
+        with pytest.raises(SystemExit, match="promotion gate rejected"):
+            manage_main()
+    finally:
+        sys.argv = old_argv
+    assert not (registry / "manifest.json").exists()
+
+
+def test_gate_partial_age_values_skip_rule_with_honest_reason(tmp_path):
+    """P7 deferred 1：部分行 age 为空 → subgroup skipped，措辞必须是「列在但值
+    缺失」而非 "age column absent"；门禁照常完成（空值行 payload 省略 age 可评分）。"""
+    header = (
+        "encounter_id,creatinine,heart_rate,respiratory_rate,"
+        "systolic_bp,spo2,temperature,label,age"
+    )
+    lines = [header]
+    for i in range(16):
+        creatinine = 3.0 if i % 4 == 0 else 0.8
+        label = 1 if creatinine > 2 else 0
+        age = "" if i == 0 else "70"
+        lines.append(f"enc-{i + 1:04d},{creatinine},70,16,120,98,36.8,{label},{age}")
+    registry = _promote_with_holdout(tmp_path, "\n".join(lines) + "\n", "age-partial-v1")
+    report = json.loads(
+        (registry / "deterioration_24h" / "age-partial-v1" / "eval.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    subgroup = report["rules"]["subgroup"]
+    assert subgroup["status"] == "skipped"
+    assert "absent" not in subgroup["reason"]
+    assert "missing" in subgroup["reason"]

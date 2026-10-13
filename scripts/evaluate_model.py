@@ -164,13 +164,18 @@ def evaluate_rows(
         if label not in (0, 1):
             raise ValueError(f"row {index}: {label_column} must be 0 or 1")
         payload = payload_from_row(row)
-        event = ClinicalEvent(
-            event_type="vital_signs",
-            patient_id=row.get("patient_id", f"validation-patient-{index}"),
-            encounter_id=row.get("encounter_id", f"validation-encounter-{index}"),
-            occurred_at=row.get("occurred_at") or datetime.now(UTC),
-            payload=payload,
-        )
+        try:
+            event = ClinicalEvent(
+                event_type="vital_signs",
+                patient_id=row.get("patient_id", f"validation-patient-{index}"),
+                encounter_id=row.get("encounter_id", f"validation-encounter-{index}"),
+                occurred_at=row.get("occurred_at") or datetime.now(UTC),
+                payload=payload,
+            )
+        except ValueError as exc:
+            # 无效 payload（如 age 非数值）带行号报错，调用方（门禁）统一包装
+            # 拒绝语，不落 pydantic traceback（P6 deferred 7）。
+            raise ValueError(f"row {index}: invalid payload ({exc})") from exc
         labels.append(label)
         scores.append(engine.score(event).score)
     return labels, scores

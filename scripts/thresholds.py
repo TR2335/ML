@@ -40,16 +40,14 @@ def derive_thresholds(
     )
     result: dict[str, float] = {}
     previous = float("-inf")
-    distinct = sorted(set(scores))
     for name, tpr in ladder:
         candidate = _max_threshold_at_tpr(scores, labels, tpr)
-        while candidate <= previous:
-            higher = [s for s in distinct if s > candidate]
-            if not higher:
-                raise ValueError(
-                    "threshold: cannot form strictly ascending cutpoints from this score distribution"
-                )
-            candidate = higher[0]
+        if candidate <= previous:
+            # _max_threshold_at_tpr 已取满足目标的最大切点——更高切点必然跌破
+            # 该档 TPR 目标，静默抬高曾产出不达标的档位（P6 deferred 2）。
+            raise ValueError(
+                "threshold: cannot form strictly ascending cutpoints from this score distribution"
+            )
         result[name] = candidate
         previous = candidate
     return result

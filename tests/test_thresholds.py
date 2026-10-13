@@ -37,6 +37,21 @@ def test_threshold_ladder_rejects_impossible_ordering():
         derive_thresholds([0.5] * 10, [1, 0] * 5, target_sensitivity=0.9)
 
 
+def test_derive_thresholds_rejects_collision_that_breaks_tpr():
+    """P6 deferred 2：撞档抬高必然跌破该档 TPR 目标 → 必须拒绝而非静默接受。
+    positives={0.5,0.5,0.8,0.9}：medium(.9) best=0.5；high(.675) best 也是 0.5
+    （下一档 0.6 处 TPR=0.5 < 0.675），旧实现会静默抬到 0.6 产出不达标的 high 档。
+    """
+    import pytest
+
+    from scripts.thresholds import derive_thresholds
+
+    scores = [0.1, 0.5, 0.5, 0.6, 0.8, 0.9]
+    labels = [0, 1, 1, 0, 1, 1]
+    with pytest.raises(ValueError, match="strictly ascending cutpoints"):
+        derive_thresholds(scores, labels)
+
+
 def _gate_like_artifact(path, target_id: str, version: str) -> None:
     import json
 

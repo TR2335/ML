@@ -448,6 +448,13 @@ def test_record_fold_auprc_skips_positive_free_fold():
     assert len(bucket) == 1 and 0.0 < bucket[0] <= 1.0
 
 
+def test_readmission_positive_rate_dead_constant_removed():
+    """P8 deferred 1：P6 均匀 8% 抽样残留，P8 字段驱动标签后成死常量——删除并钉住。"""
+    from scripts import train_model
+
+    assert not hasattr(train_model, "READMISSION_POSITIVE_RATE")
+
+
 def test_make_golden_default_artifacts_track_settings_defaults():
     """P6 deferred 8：make_golden 的工件路径不得与 app.config 默认值双写。"""
     import scripts.make_golden as make_golden_module

@@ -39,7 +39,6 @@ FEATURES_V2 = [
 
 # 阈值字面量单一来源 = app.risk.DEFAULT_THRESHOLDS（P6 deferred 3：曾双份硬编码）。
 READMISSION_DISCHARGE_HOURS = 72
-READMISSION_POSITIVE_RATE = 0.08
 
 
 def feature_names_for(target_id: str) -> list[str]:

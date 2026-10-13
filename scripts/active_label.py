@@ -87,7 +87,8 @@ def main() -> None:
     picked = select_for_labeling(rows, engine, args.top)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    out_fields = [*fields, "score", "uncertainty"]
+    # 输入已含 score/uncertainty（对上轮输出再跑）时不追加重复列（P6 deferred 6）。
+    out_fields = list(dict.fromkeys([*fields, "score", "uncertainty"]))
     with output.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=out_fields)
         writer.writeheader()

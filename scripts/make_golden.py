@@ -21,9 +21,11 @@ from scripts.train_model import FEATURES_V2, build_demo_dataset
 SAMPLE_ROWS = 200
 SAMPLE_SEED = 99
 TOLERANCE = 1e-9
+# 路径单一来源 = app.config 字段默认（P6 deferred 8：改 config 默认值时
+# make_golden 不再静默指向旧工件）。用类字段默认而非实例，避免环境变量污染。
 DEFAULT_ARTIFACTS = {
-    "deterioration_24h": Path("data/model.json"),
-    "readmission_30d": Path("data/readmission_model.json"),
+    "deterioration_24h": Path(Settings.model_fields["model_path"].default),
+    "readmission_30d": Path(Settings.model_fields["readmission_model_path"].default),
 }
 
 

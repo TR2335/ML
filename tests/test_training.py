@@ -404,3 +404,21 @@ def test_record_fold_auprc_skips_positive_free_fold():
     assert bucket == []
     _record_fold_auprc(bucket, [0, 1], [0.4, 0.6])
     assert len(bucket) == 1 and 0.0 < bucket[0] <= 1.0
+
+
+def test_make_golden_default_artifacts_track_settings_defaults():
+    """P6 deferred 8：make_golden 的工件路径不得与 app.config 默认值双写。"""
+    import scripts.make_golden as make_golden_module
+    from app.config import Settings
+    from scripts.make_golden import DEFAULT_ARTIFACTS
+
+    assert DEFAULT_ARTIFACTS["deterioration_24h"] == Path(
+        Settings.model_fields["model_path"].default
+    )
+    assert DEFAULT_ARTIFACTS["readmission_30d"] == Path(
+        Settings.model_fields["readmission_model_path"].default
+    )
+    # 结构性钉子：路径字面量不得回流 make_golden（改 config 默认值必须只改一处）
+    source = Path(make_golden_module.__file__).read_text(encoding="utf-8")
+    assert 'Path("data/model.json")' not in source
+    assert 'Path("data/readmission_model.json")' not in source

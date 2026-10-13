@@ -432,6 +432,41 @@ def test_promote_gate_rejects_missing_group_keys(tmp_path):
     assert not (registry / "manifest.json").exists()
 
 
+def test_load_artifact_accepts_legacy_vitals_readmission_artifact(tmp_path):
+    """P8 deferred 3：readmission 白名单半边（旧 vitals 形态）必须有回归测试。"""
+    from app.synthetic import FEATURES
+    from scripts.manage_model import load_artifact
+
+    legacy = tmp_path / "legacy_readmission.json"
+    legacy.write_text(
+        json.dumps(
+            {
+                "model_version": "legacy-rm-v1",
+                "target_id": "readmission_30d",
+                "feature_names": list(FEATURES),
+            }
+        ),
+        encoding="utf-8",
+    )
+    artifact = load_artifact(legacy, "readmission_30d")
+    assert tuple(artifact["feature_names"]) == tuple(FEATURES)
+
+
+def test_load_artifact_rejects_unknown_signature(tmp_path):
+    """负例：既非旧 vitals 也非出院快照编码的签名必须响亮拒绝。"""
+    import pytest
+
+    from scripts.manage_model import load_artifact
+
+    bad = tmp_path / "bad_sig.json"
+    bad.write_text(
+        json.dumps({"target_id": "readmission_30d", "feature_names": ["bogus_feature"]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="model feature signature is invalid"):
+        load_artifact(bad, "readmission_30d")
+
+
 def _promote_with_holdout(tmp_path, holdout_body: str, version: str):
     """复用既有 harness 的最小 promote 驱动；返回 registry 路径。"""
     artifact = tmp_path / f"{version}.json"

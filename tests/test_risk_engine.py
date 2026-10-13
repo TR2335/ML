@@ -46,6 +46,22 @@ def test_high_risk_patient_scores_above_low_risk_patient(tmp_path):
     assert high.score > low.score
     assert high.band in {"high", "critical"}
     assert len(high.top_factors) == 4
+    # P6 deferred 5：展示标签不得出现 __missing 裸工程名。
+    assert all("__missing" not in factor.label for factor in high.top_factors)
+
+
+def test_factor_label_hides_missing_engineering_names():
+    """P6 deferred 5：`__missing` 指示列展示为「基特征缺失」，不透出裸工程名。"""
+    from app.risk import LABELS, factor_label
+
+    label = factor_label("heart_rate__missing")
+    assert label.endswith("缺失") and "__missing" not in label
+    assert label == f"{LABELS.get('heart_rate', 'heart_rate')}缺失"
+    # 未知基特征也兜底成「名缺失」
+    assert factor_label("mystery_feature__missing") == "mystery_feature缺失"
+    # 普通特征透传
+    assert factor_label("mystery_feature") == "mystery_feature"
+    assert factor_label("news2_score") == LABELS.get("news2_score", "news2_score")
 
 
 def test_score_reports_missing_features(tmp_path):

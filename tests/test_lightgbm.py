@@ -171,6 +171,8 @@ def test_tree_path_contributions_sum_to_logit(tmp_path):
     # 归因确实有信号：top_factors 非空且带中文/原名标签
     assert score.top_factors
     assert all(factor.feature for factor in score.top_factors)
+    # P6 deferred 5：展示标签不得出现 __missing 裸工程名（树路径同样经 factor_label）。
+    assert all("__missing" not in factor.label for factor in score.top_factors)
 
 
 def test_tree_engine_rejects_corrupt_trees_block(tmp_path):

@@ -49,6 +49,17 @@ DEFAULT_THRESHOLDS = {
     "readmission_30d": {"medium": 0.15, "high": 0.3, "critical": 0.55},
 }
 
+MISSING_SUFFIX = "__missing"
+
+
+def factor_label(name: str) -> str:
+    """工程特征名 → 展示标签。`__missing` 指示列展示为「基特征缺失」，
+    不把裸工程名透给临床用户（P6 deferred 5）。"""
+    if name.endswith(MISSING_SUFFIX):
+        base = name[: -len(MISSING_SUFFIX)]
+        return f"{LABELS.get(base, base)}缺失"
+    return LABELS.get(name, name)
+
 
 def _validated_preprocess(
     raw: object, feature_order: list[str]
@@ -456,7 +467,7 @@ class RiskEngine:
             score=score,
             band=band,
             top_factors=[
-                RiskFactor(feature=f, label=LABELS.get(f, f), contribution=round(c, 3), value=v)
+                RiskFactor(feature=f, label=factor_label(f), contribution=round(c, 3), value=v)
                 for f, c, v in factors
             ],
             missing_features=missing_features,
@@ -574,7 +585,7 @@ class RiskEngine:
             top_factors=[
                 RiskFactor(
                     feature=name,
-                    label=LABELS.get(name, name),
+                    label=factor_label(name),
                     contribution=round(value, 3),
                     value=(
                         float(payload.get(name))

@@ -1,4 +1,4 @@
-# MedIntel 终版状态（2026-10-12 更新）
+# MedIntel 终版状态（2026-10-13 更新）
 
 > 新终端会话从这里恢复上下文。计划原文：`docs/superpowers/plans/2026-10-12-medintel-real-scale-optimization.md`（P-Scale 补录版）、`2026-10-10-medintel-p7.md`、`2026-10-10-medintel-p8.md`、`2026-09-28-medintel-p6.md`（及 P0–P5 同目录）；设计 spec：`docs/superpowers/specs/2026-10-12-medintel-real-scale-optimization-design.md`。
 
@@ -13,7 +13,7 @@
 ## 待办
 
 1. ~~推送（56 提交）~~ 已完成（2026-10-10）。
-2. **P-Scale 提交推送**：`git push origin master`（2026-10-12 新增提交，待用户确认）。
+2. ~~P-Scale 提交推送~~ 已完成（2026-10-13，12 提交推送至 origin/master，`1804254..e6d8252`；本机需经 127.0.0.1:7897 代理）。
 3. **P9 真实数据自助接入**：用户取数后按 `docs/data-integration-design.md` 执行（出院快照 6 字段契约已定：`discharge_destination/los_days/diagnosis_codes/comorbidity_index/prior_utilization_12m/ed_visits_6m`）；真实数据下先跑 `scale_rehearsal` 同款链路（`generate_scale_data` 换成真实导入），患者级切分与报告卡即刻可用。
 
 ## 关键运行时事实

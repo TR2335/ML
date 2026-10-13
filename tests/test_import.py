@@ -174,28 +174,33 @@ def test_import_records_rolls_back_completely_on_failure(tmp_path):
 
 
 def test_discharge_payload_missing_fields_rejected():
+    """P8 deferred 5：逐字段遍历 DISCHARGE_SNAPSHOT_FIELDS——消除第三份手写清单。"""
     import pytest
 
-    from app.domain import ClinicalEvent
+    from app.domain import DISCHARGE_SNAPSHOT_FIELDS, ClinicalEvent
 
-    with pytest.raises(Exception) as excinfo:
-        ClinicalEvent.model_validate(
-            {
-                "event_type": "discharge",
-                "patient_id": "pat-001",
-                "encounter_id": "enc-001",
-                "payload": {"discharge_destination": "home"},
-            }
-        )
-    message = str(excinfo.value)
-    assert "discharge payload missing fields" in message
-    for field in (
-        "los_days",
-        "diagnosis_codes",
-        "comorbidity_index",
-        "prior_utilization_12m",
-        "ed_visits_6m",
-    ):
+    full_payload = {
+        "discharge_destination": "snf",
+        "los_days": 5.2,
+        "diagnosis_codes": ["I50.9"],
+        "comorbidity_index": 2.0,
+        "prior_utilization_12m": 1,
+        "ed_visits_6m": 3,
+    }
+    for field in DISCHARGE_SNAPSHOT_FIELDS:
+        payload = dict(full_payload)
+        payload.pop(field)
+        with pytest.raises(Exception) as excinfo:
+            ClinicalEvent.model_validate(
+                {
+                    "event_type": "discharge",
+                    "patient_id": "pat-001",
+                    "encounter_id": "enc-001",
+                    "payload": payload,
+                }
+            )
+        message = str(excinfo.value)
+        assert "discharge payload missing fields" in message
         assert field in message
 
 

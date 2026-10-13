@@ -69,6 +69,15 @@ def test_feature_order_includes_news2_score():
     assert len(FEATURE_ORDER) == 71
 
 
+def test_discharge_snapshot_fields_match_readmission_payload_keys():
+    """P8 deferred 5：两处 6 字段契约必须集合相等——双常量漂移由本测试拦截。"""
+    from app.domain import DISCHARGE_SNAPSHOT_FIELDS
+    from app.features import READMISSION_PAYLOAD_KEYS
+
+    assert len(DISCHARGE_SNAPSHOT_FIELDS) == 6
+    assert set(DISCHARGE_SNAPSHOT_FIELDS) == set(READMISSION_PAYLOAD_KEYS)
+
+
 def test_encode_readmission_payload_maps_fields_and_handles_missing():
     import math
 

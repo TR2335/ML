@@ -25,6 +25,7 @@ from sklearn.preprocessing import StandardScaler
 
 from app.domain import ClinicalEvent
 from app.features import READMISSION_FEATURES, encode_readmission_payload
+from app.risk import DEFAULT_THRESHOLDS
 from app.synthetic import FEATURES, demo_patients_with_outcomes
 from scripts.baselines import news2_score
 from scripts.derive_labels import _latest_payload_before, demo_index_times, derive_labels
@@ -36,10 +37,7 @@ FEATURES_V2 = [
     "news2_score",
 ]
 
-TARGET_THRESHOLDS = {
-    "deterioration_24h": {"medium": 0.2, "high": 0.45, "critical": 0.75},
-    "readmission_30d": {"medium": 0.15, "high": 0.3, "critical": 0.55},
-}
+# 阈值字面量单一来源 = app.risk.DEFAULT_THRESHOLDS（P6 deferred 3：曾双份硬编码）。
 READMISSION_DISCHARGE_HOURS = 72
 READMISSION_POSITIVE_RATE = 0.08
 
@@ -550,7 +548,7 @@ def main() -> None:
             },
             "training_rows": len(train_idx),  # 只记实际 fit 的训练段（P6 deferred 1）
             "label_definition": f"synthetic_{args.target_id}",
-            "thresholds": TARGET_THRESHOLDS[args.target_id],
+            "thresholds": DEFAULT_THRESHOLDS[args.target_id],
         }
     else:
         pipeline, best_c = _fit_pipeline(times, matrix, labels)
@@ -582,7 +580,7 @@ def main() -> None:
             "best_C": best_c,
             "drift_reference": drift_reference,
             "label_definition": f"synthetic_{args.target_id}",
-            "thresholds": TARGET_THRESHOLDS[args.target_id],
+            "thresholds": DEFAULT_THRESHOLDS[args.target_id],
         }
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

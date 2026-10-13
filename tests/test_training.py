@@ -380,3 +380,16 @@ def test_calibration_block_carries_sample_audit(tmp_path):
     if cal["fitted_on"] == "train_segment":
         # 校准拟合自训练段 → 样本数与 training_rows 同源（两项修复互相钉住）。
         assert cal["n_samples"] == artifact["training_rows"]
+
+
+def test_threshold_defaults_have_single_source():
+    """P6 deferred 3：train_model 不得再持有独立的阈值字面量副本。"""
+    from app.risk import DEFAULT_THRESHOLDS
+    from scripts import train_model
+
+    assert not hasattr(train_model, "TARGET_THRESHOLDS")
+    assert DEFAULT_THRESHOLDS["deterioration_24h"] == {
+        "medium": 0.2,
+        "high": 0.45,
+        "critical": 0.75,
+    }

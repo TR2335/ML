@@ -203,7 +203,7 @@ def run_promotion_gate(
         }
     else:
         rules["subgroup"] = {"status": "skipped", "reason": "age column absent"}
-    facility = per_facility_auprc(rows, labels, scores, baseline_auprc)
+    facility = per_facility_auprc(rows, labels, scores, baseline_scores)
     facility["status"] = (
         "skipped" if not facility["checked"] else ("fail" if facility["failures"] else "pass")
     )

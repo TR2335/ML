@@ -324,7 +324,6 @@ def build_report_card(
             "status": "skipped",
             "reason": "lace fields missing/invalid in input rows",
         }
-        baseline_auprc: float | None = None
     else:
         baseline_name, baseline_scores = baseline
         baseline_metrics = binary_metrics(
@@ -335,7 +334,6 @@ def build_report_card(
             "threshold": BASELINE_THRESHOLDS[baseline_name],
             "metrics": baseline_metrics,
         }
-        baseline_auprc = baseline_metrics["auprc"]
     comparison["model_with_news2"] = {
         "status": "skipped",
         "reason": (
@@ -348,8 +346,8 @@ def build_report_card(
 
     # 6. 亚组与院区（无 age 列 → 整章 skipped 并注明）
     ages = [row.get("age", "") for row in oof_rows]
-    if baseline_auprc is not None:
-        facility_data: dict = per_facility_auprc(oof_rows, oof_labels, oof_scores, baseline_auprc)
+    if baseline is not None:
+        facility_data: dict = per_facility_auprc(oof_rows, oof_labels, oof_scores, baseline_scores)
     else:
         facility_data = {"checked": False, "reason": "baseline unavailable", "failures": []}
     if not all(age not in ("", None) for age in ages):

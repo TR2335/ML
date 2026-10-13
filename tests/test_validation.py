@@ -109,26 +109,44 @@ def test_decision_curve_mean_gain_both_sides():
 
 
 def test_per_facility_auprc_requires_two_facilities():
+    import pytest
+
     from scripts.validate import per_facility_auprc
 
     rows = [{"facility_id": "h1"}] * 30
     labels = [1] * 10 + [0] * 20
     scores = [0.9] * 10 + [0.1] * 20
-    single = per_facility_auprc(rows, labels, scores, baseline_auprc=0.3)
+    baseline = [0.5] * 30  # 恒分基线 → 本院基线点估计 = 患病率 1/3
+    single = per_facility_auprc(rows, labels, scores, baseline)
     assert single["checked"] is False
     rows2 = [{"facility_id": "h1" if i < 30 else "h2"} for i in range(60)]
     labels2 = labels + labels
-    both = per_facility_auprc(rows2, labels2, scores + scores, baseline_auprc=0.3)
+    both = per_facility_auprc(rows2, labels2, scores + scores, baseline + baseline)
     assert both["checked"] is True and not both["failures"]
-    # h2 反向排序：10 阳性压到 20 阴性之后 → AUPRC≈0.21 < 基线 0.3 → 拒。
-    # P6 deferred 9：阳性给互异低分——同分组在平局分组口径下 AP=prevalence
-    # (1/3) 跌不破基线，只有逐档劣化排序才构造得出「坏院区」。
+    # h2 反向排序：10 阳性压到 20 阴性之后 → 模型 AUPRC≈0.2055 <
+    # 同院区基线（prevalence 1/3）→ 拒；baseline 记录的是本院点估计而非全局值。
     inverted2 = scores + [0.01 * i for i in range(10)] + [0.9] * 20
-    bad = per_facility_auprc(rows2, labels2, inverted2, baseline_auprc=0.3)
+    bad = per_facility_auprc(rows2, labels2, inverted2, baseline + baseline)
     assert bad["checked"] is True and bad["failures"]
+    assert bad["failures"][0]["baseline"] == pytest.approx(1 / 3)
     # 缺 facility 列 → 降级跳过
-    missing = per_facility_auprc([{}] * 60, labels2, scores + scores, baseline_auprc=0.3)
+    missing = per_facility_auprc([{}] * 60, labels2, scores + scores, baseline + baseline)
     assert missing["checked"] is False
+
+
+def test_per_facility_auprc_skips_facilities_below_positive_floor():
+    """R-P7-6 对齐口径：合格院区须 ≥10 阳性——8 阳性的小院区不参与裁决
+    （AUPRC 点估计在个位数阳性下方差无意义），其余院区照常评估。"""
+    from scripts.validate import per_facility_auprc
+
+    rows = [{"facility_id": "h1"}] * 30 + [{"facility_id": "h3"}] * 30
+    labels = [1] * 10 + [0] * 20 + [1] * 8 + [0] * 22
+    scores = [0.9] * 10 + [0.1] * 20 + [0.5] * 30  # h3 恒分（会被 floor 跳过）
+    baseline = [0.5] * 60
+    result = per_facility_auprc(rows, labels, scores, baseline)
+    assert result["checked"] is True
+    assert result["failures"] == []
+    assert result["worst"] is not None
 
 
 def _staggered_patient_rows() -> list[dict]:

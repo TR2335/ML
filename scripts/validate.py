@@ -199,13 +199,17 @@ def per_facility_auprc(
     rows: list[dict],
     labels: list[int],
     scores: list[float],
-    baseline_auprc: float,
+    baseline_scores: list[float],
     *,
     facility_column: str = "facility_id",
     min_rows: int = 20,
-    min_positives: int = 5,
+    min_positives: int = 10,
 ) -> dict:
-    """按院区评估（Ruling R-P7-7）：合格院区 AUPRC ≥ baseline 才算过。"""
+    """按院区评估（Ruling R-P7-7 留一院区口径）：合格院区的模型 AUPRC ≥
+    **同院区**基线点估计才算过——AUPRC 依赖患病率，拿全局基线裁决院区子集是
+    跨总体比较（平局口径修复后暴露的潜伏缺陷；主规则本就是同行比较）。
+    合格院区 ≥20 行且 ≥10 阳性（对齐 R-P7-6 亚组口径：个位数阳性的 AUPRC
+    点估计方差无意义）。"""
     buckets: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
         facility = str(row.get(facility_column, "") or "")
@@ -222,10 +226,15 @@ def per_facility_auprc(
         facility_labels = [labels[i] for i in indices]
         if sum(facility_labels) < min_positives:
             continue
-        auprc = binary_metrics(facility_labels, [scores[i] for i in indices], 0.5)["auprc"] or 0.0
+        facility_scores = [scores[i] for i in indices]
+        auprc = binary_metrics(facility_labels, facility_scores, 0.5)["auprc"] or 0.0
+        local_baseline = (
+            binary_metrics(facility_labels, [baseline_scores[i] for i in indices], 7 / 15)["auprc"]
+            or 0.0
+        )
         worst = auprc if worst is None else min(worst, auprc)
-        if auprc < baseline_auprc:
-            failures.append({"facility": facility, "auprc": auprc, "baseline": baseline_auprc})
+        if auprc < local_baseline:
+            failures.append({"facility": facility, "auprc": auprc, "baseline": local_baseline})
     return {"checked": True, "worst": worst, "failures": failures}
 
 

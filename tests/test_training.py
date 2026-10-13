@@ -393,3 +393,14 @@ def test_threshold_defaults_have_single_source():
         "high": 0.45,
         "critical": 0.75,
     }
+
+
+def test_record_fold_auprc_skips_positive_free_fold():
+    """P6 deferred 4：测试折无阳性 → 跳过该折，不记 0（记 0 会压低均值扭曲 C 选择）。"""
+    from scripts.train_model import _record_fold_auprc
+
+    bucket: list[float] = []
+    _record_fold_auprc(bucket, [0, 0], [0.4, 0.6])  # 无阳性 → auprc=None
+    assert bucket == []
+    _record_fold_auprc(bucket, [0, 1], [0.4, 0.6])
+    assert len(bucket) == 1 and 0.0 < bucket[0] <= 1.0

@@ -205,12 +205,23 @@ def load_dataset_csv(path: Path, target_id: str) -> tuple[list[dict], list[list[
     return times, matrix, labels
 
 
+def _record_fold_auprc(fold_scores: list[float], test_labels: list[int], pred) -> dict | None:
+    """测试折无阳性时 binary_metrics 返回 auprc=None——跳过该折而不是记 0
+    （P6 deferred 4：记 0 会系统性压低均值，扭曲 C/超参选择）。
+    返回该折 metrics 供调用方复用（ece 等），无阳性返回 None。"""
+    from scripts.evaluate_model import binary_metrics
+
+    metrics = binary_metrics(test_labels, list(map(float, pred)), 0.5)
+    if metrics["auprc"] is None:
+        return None
+    fold_scores.append(metrics["auprc"])
+    return metrics
+
+
 def _fit_pipeline(
     times: list[dict], matrix: list[list[float]], labels: list[int]
 ) -> tuple[Pipeline, float]:
     """C 网格 × rolling_time_split 时间交叉验证，按平均 AUPRC 选（WBS T6.1）。"""
-    from scripts.evaluate_model import binary_metrics
-
     fold_rows = [
         {"index_time": t["index_time"], "_i": i, "label": str(labels[i])}
         for i, t in enumerate(times)
@@ -250,8 +261,7 @@ def _fit_pipeline(
             pipe.fit(matrix_array[train_idx], labels_array[train_idx])
             pred = pipe.predict_proba(matrix_array[test_idx])[:, 1]
             test_labels = [labels[i] for i in test_idx]
-            value = binary_metrics(test_labels, list(map(float, pred)), 0.5)["auprc"]
-            scores.append(value or 0.0)
+            _record_fold_auprc(scores, test_labels, pred)
         if not scores:
             continue
         mean_auprc = sum(scores) / len(scores)
@@ -377,8 +387,6 @@ def _fit_lightgbm(
     import optuna
     from lightgbm import LGBMClassifier
 
-    from scripts.evaluate_model import binary_metrics
-
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     fold_rows = [
         {"index_time": t["index_time"], "_i": i, "label": str(labels[i])}
@@ -416,9 +424,11 @@ def _fit_lightgbm(
             )
             model.fit(x[train_idx], y[train_idx])
             pred = model.predict_proba(x[test_idx])[:, 1]
-            metrics = binary_metrics([labels[i] for i in test_idx], list(map(float, pred)), 0.5)
-            auprcs.append(metrics["auprc"] or 0.0)
-            eces.append(metrics["ece"] or 0.0)
+            metrics = _record_fold_auprc(
+                auprcs, [labels[i] for i in test_idx], list(map(float, pred))
+            )
+            if metrics is not None:
+                eces.append(metrics["ece"] or 0.0)
         if not auprcs:
             return -1.0
         return sum(auprcs) / len(auprcs) - 0.1 * (sum(eces) / len(eces))

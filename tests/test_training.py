@@ -361,9 +361,22 @@ def test_train_cli_with_input_writes_artifact(tmp_path):
         sys.argv = old_argv
     artifact = json.loads(Path(output).read_text(encoding="utf-8"))
     assert artifact["model_version"] == "scale-in-v1"
-    assert artifact["training_rows"] == 40
+    # P6 deferred 1：training_rows 只计实际 fit 的 60% 训练段，不再记全量。
+    assert artifact["training_rows"] == 24  # int(40 * 0.6)
     assert artifact["feature_order"] == [
         *FEATURES,
         *[f"{feature}__missing" for feature in FEATURES],
         "news2_score",
     ]
+
+
+def test_calibration_block_carries_sample_audit(tmp_path):
+    """P6 deferred 10：校准审计链除 fitted_on 外还须有样本量与阳性数。"""
+    path = _train(tmp_path)
+    artifact = json.loads(Path(path).read_text(encoding="utf-8"))
+    cal = artifact["calibration"]
+    assert cal["n_samples"] > 0
+    assert 0 < cal["n_positives"] <= cal["n_samples"]
+    if cal["fitted_on"] == "train_segment":
+        # 校准拟合自训练段 → 样本数与 training_rows 同源（两项修复互相钉住）。
+        assert cal["n_samples"] == artifact["training_rows"]

@@ -460,6 +460,8 @@ def _fit_isotonic_block(margins, labels: list[int], fitted_on: str) -> dict:
             "a": float(platt.coef_[0][0]),
             "b": float(platt.intercept_[0]),
             "fitted_on": fitted_on,
+            "n_samples": len(labels),
+            "n_positives": int(sum(labels)),
             "fallback_reason": "isotonic_resolution",
         }
     return {
@@ -467,6 +469,8 @@ def _fit_isotonic_block(margins, labels: list[int], fitted_on: str) -> dict:
         "x_thresholds": [float(v) for v in isotonic.X_thresholds_],
         "y_scores": y_scores,
         "fitted_on": fitted_on,
+        "n_samples": len(labels),
+        "n_positives": int(sum(labels)),
     }
 
 
@@ -544,7 +548,7 @@ def main() -> None:
                 "best_params": study.best_params,
                 "best_value": study.best_value,
             },
-            "training_rows": len(y),
+            "training_rows": len(train_idx),  # 只记实际 fit 的训练段（P6 deferred 1）
             "label_definition": f"synthetic_{args.target_id}",
             "thresholds": TARGET_THRESHOLDS[args.target_id],
         }
@@ -574,7 +578,7 @@ def main() -> None:
             "calibration": calibration_block,
             "bias": float(clf.intercept_[0]),
             "weights": {name: float(clf.coef_[0][i]) for i, name in enumerate(feature_names)},
-            "training_rows": len(y),
+            "training_rows": len(train_idx),  # 只记实际 fit 的训练段（P6 deferred 1）
             "best_C": best_c,
             "drift_reference": drift_reference,
             "label_definition": f"synthetic_{args.target_id}",

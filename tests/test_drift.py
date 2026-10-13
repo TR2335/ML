@@ -136,6 +136,12 @@ def test_recalibrate_only_updates_calibration_and_gates(tmp_path):
     changed = {key for key in before if before[key] != after.get(key)}
     assert changed <= {"calibration"}
     assert after["calibration"]["fitted_on"] == "recalibration_set"
+    # P6 deferred 10：再校准块同样携带样本审计。
+    recal_rows = list(_csv.DictReader(holdout.open(newline="", encoding="utf-8")))
+    assert after["calibration"]["n_samples"] == len(recal_rows)
+    assert after["calibration"]["n_positives"] == sum(
+        1 for row in recal_rows if row["label"] == "1"
+    )
 
     # 不过路径：gate 输入无阳性 → SystemExit 且原件分毫不动
     no_positive = tmp_path / "no-positive.csv"

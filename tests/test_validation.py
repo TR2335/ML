@@ -149,6 +149,35 @@ def test_per_facility_auprc_skips_facilities_below_positive_floor():
     assert result["worst"] is not None
 
 
+def test_per_facility_auprc_all_skipped_is_unchecked():
+    """P7 deferred 3a：全部院区因 min_rows/min_positives 被跳过 → checked=False，
+    不得当成 pass（worst=None 会让消费方误判通过）。"""
+    from scripts.validate import per_facility_auprc
+
+    rows = [{"facility_id": "A"}] * 5 + [{"facility_id": "B"}] * 5
+    labels = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+    scores = [0.9, 0.1, 0.2, 0.3, 0.4, 0.8, 0.1, 0.2, 0.3, 0.4]
+    baseline = [0.5] * 10
+    result = per_facility_auprc(rows, labels, scores, baseline, min_rows=20, min_positives=5)
+    assert result["checked"] is False
+    assert "skipped" in result["reason"]
+    assert result["failures"] == []
+
+
+def test_subgroup_sensitivity_diff_considers_all_groups():
+    """P7 deferred 3b：≥3 组取全体 max-min——前两组相同、第三组失衡必须被抓出。"""
+    import pytest
+
+    from scripts.validate import subgroup_sensitivity_diff
+
+    groups = ["g1"] * 20 + ["g2"] * 20 + ["g3"] * 20
+    labels = [1] * 10 + [0] * 10 + [1] * 10 + [0] * 10 + [1] * 10 + [0] * 10
+    # g1/g2 灵敏度 1.0，g3 灵敏度 0.0
+    scores = [0.9] * 10 + [0.1] * 10 + [0.9] * 10 + [0.1] * 10 + [0.1] * 10 + [0.9] * 10
+    diff = subgroup_sensitivity_diff(labels, scores, groups, 0.5, min_positives=10)
+    assert diff == pytest.approx(1.0)
+
+
 def _staggered_patient_rows() -> list[dict]:
     """6 患者 × 6 行；患者时点按 48h 错开，患者内行连续 1h。"""
     from datetime import UTC, datetime, timedelta

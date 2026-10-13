@@ -176,7 +176,7 @@ def subgroup_sensitivity_diff(
     *,
     min_positives: int = 10,
 ) -> float | None:
-    """两组灵敏度之差绝对值；任一组阳性不足或组数<2 → None（跳过，Ruling R-P7-6）。"""
+    """全体组灵敏度 max−min；任一组阳性不足或组数<2 → None（跳过，Ruling R-P7-6）。"""
     by_group: dict[str, tuple[int, int]] = {}
     for label, score, group in zip(labels, scores, groups):
         positives, detected = by_group.get(group, (0, 0))
@@ -192,7 +192,8 @@ def subgroup_sensitivity_diff(
         sensitivities.append(detected / positives)
     if len(sensitivities) < 2:
         return None
-    return abs(sensitivities[0] - sensitivities[1])
+    # P7 deferred 3b：≥3 组时取全体 max-min，不再只比较前两组。
+    return max(sensitivities) - min(sensitivities)
 
 
 def per_facility_auprc(
@@ -220,12 +221,14 @@ def per_facility_auprc(
         return {"checked": False, "reason": "fewer than 2 facilities", "failures": []}
     failures = []
     worst = None
+    evaluated = 0
     for facility, indices in sorted(buckets.items()):
         if len(indices) < min_rows:
             continue
         facility_labels = [labels[i] for i in indices]
         if sum(facility_labels) < min_positives:
             continue
+        evaluated += 1
         facility_scores = [scores[i] for i in indices]
         auprc = binary_metrics(facility_labels, facility_scores, 0.5)["auprc"] or 0.0
         local_baseline = (
@@ -235,6 +238,14 @@ def per_facility_auprc(
         worst = auprc if worst is None else min(worst, auprc)
         if auprc < local_baseline:
             failures.append({"facility": facility, "auprc": auprc, "baseline": local_baseline})
+    if not evaluated:
+        # P7 deferred 3a：全部院区被跳过 → 未评估，不得报 checked=True/pass。
+        return {
+            "checked": False,
+            "worst": None,
+            "failures": [],
+            "reason": "all facilities skipped (min_rows/min_positives)",
+        }
     return {"checked": True, "worst": worst, "failures": failures}
 
 

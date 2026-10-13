@@ -35,5 +35,7 @@
 
 - **参考分布随工件**：训练时每个特征的 `drift_reference`（lo/hi + 10 等宽箱占比 + 缺失率）写入工件；再训练即刷新。
 - **批量漂移检查**：`python scripts/monitor_drift.py --artifact <工件> --input <批次CSV>` 逐特征算 PSI（0.005 平滑、缺失率差并入），任一 PSI > 0.2 → 报告 `alert: true` 并 `exit 1`，对接方按退出码接告警系统（生产建议按月随再校准一起跑）。
+- **漂移输入 CSV 的 schema 要求**（`monitor_drift`）：输入须包含工件 `feature_order` 的全部特征列——deterioration 为 21 维 v2（10 原始体征 + 10 个 `__missing` 指示列 + `news2_score` 派生列）；readmission 为 6 维出院快照编码（`diagnosis_code_count`、`discharge_destination_code` 两个派生列缺失时按出院源字段 `discharge_destination/los_days/diagnosis_codes/comorbidity_index/prior_utilization_12m/ed_visits_6m` 即时编码，R-RS-15）；其他缺失列按缺失入 bucket 计入 missing rate，不报错。
 - **月度再校准**：`python scripts/recalibrate.py --artifact <工件> --input <标注CSV> --target-id <目标> [--gate-input <独立留出集>]` 只重拟合 `calibration` 块；门禁（CI 下界 ≥ 基线 + ECE + 三条规则）在临时候选工件上先跑，不过则原工件分毫不动、`exit 1`。同输入校准+门禁存在 in-sample 乐观性，真实数据务必提供独立 `--gate-input`。
+- **校准方法与分辨率回退（Ruling R-P7-5/5a）**：校准默认 isotonic 回归；当拟合段唯一 y 水平 < 3（分数会坍缩成二值、摧毁阈值阶梯与分带）时自动回退 Platt，并在工件 `calibration` 块记录 `fallback_reason: isotonic_resolution`。demo deterioration 触发该回退属预期；真实数据阳性数充足时走真 isotonic。
 - **在线指标**：`GET /api/metrics` 暴露近期分数（≤500 条）的 `medintel_band_share{band=...}` 与 `medintel_missing_rate{scope=...}` gauge（当前 SQLite 聚合，Postgres 适配器待补）。

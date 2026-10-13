@@ -187,10 +187,7 @@ def test_recalibrate_rejects_non_binary_labels(tmp_path, bad_label):
     artifact.write_text(json.dumps({"target_id": "readmission_30d"}), encoding="utf-8")
     inp = tmp_path / "in.csv"
     inp.write_text(
-        "encounter_id,label\n"
-        f"enc-0001,{bad_label}\n"
-        "enc-0002,0\n"
-        "enc-0003,1\n",
+        f"encounter_id,label\nenc-0001,{bad_label}\nenc-0002,0\nenc-0003,1\n",
         encoding="utf-8",
     )
     old_argv = sys.argv

@@ -146,7 +146,9 @@ def run_promotion_gate(
         baseline_name = "news2"
         try:
             baseline_scores = [
-                news2_score({f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)})[0]
+                news2_score(
+                    {f: float(row[f]) for f in FEATURES if row.get(f, "") not in ("", None)}
+                )[0]
                 / 15
                 for row in rows
             ]

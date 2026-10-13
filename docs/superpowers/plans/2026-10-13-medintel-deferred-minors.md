@@ -1,6 +1,8 @@
 # MedIntel 24 项终审 Deferred Minors 清偿实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行状态（2026-10-13 收尾补录）**：21 任务已全部完成（`a0d89de..54a194b` + 终审修复），checkbox 已勾选。**执行期裁定以台账 `.superpowers/sdd/2026-10-13-medintel-deferred-minors/progress.md` 的 `Ruling:` 行为准**——本计划正文为事前稿，其中 Task 9 执行时新增了计划外的最大行为裁定（facility 门禁语义，见 Task 9 补录框），Task 11 的 Interfaces 签名在 Task 9 后已变更（以实际代码为准）。
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 一次性清偿 P6/P7/P8 三轮终审留下的全部 24 项 deferred minor（P6×10、P7×8、P8×6），不引入行为回归。
 
@@ -12,7 +14,7 @@
 
 ## Global Constraints
 
-- 基线（2026-10-13 实测）：`pytest` → **196 passed + 1 skipped + 2 deselected**；`ruff check .` 全零。每任务结束两者必须保持全绿。
+- 基线（2026-10-13 实测）：`pytest` → **196 passed + 1 skipped + 2 deselected**；`ruff check .` 全零；**`ruff format --check app scripts tests` 全零（CI :27 门禁——初稿漏列此项，终审 C1 补入）**。每任务结束三者必须保持全绿。
 - `app/` serving 层保持纯标准库（不得引入 scikit-learn 等训练依赖）。
 - TDD：每个修复先落测试、确认失败，再改实现。禁止 `skip`/`only`/TODO 占位。
 - 每任务独立提交，风格沿用仓库既有前缀（`fix:`/`test:`/`docs:`/`chore:`）。
@@ -67,7 +69,7 @@
 **Interfaces:**
 - Produces: 工件 `training_rows` = 实际 fit 的 60% 训练段行数（不再记全量）；`calibration` 块新增 `n_samples: int`、`n_positives: int`（两个分支都有，确定性字段——**不得加时间戳**，否则 golden 不可复现）。后续任务与报告卡不依赖这些字段的旧语义。
 
-- [ ] **Step 1: 改测试期望（红）**
+- [x] **Step 1: 改测试期望（红）**
 
 `tests/test_training.py:364`（输入 CSV 恰 40 行的用例）：
 
@@ -76,7 +78,7 @@
     assert artifact["training_rows"] == 24  # int(40 * 0.6)
 ```
 
-- [ ] **Step 2: 新增校准审计测试（红）**
+- [x] **Step 2: 新增校准审计测试（红）**
 
 `tests/test_training.py` 新增：
 
@@ -93,12 +95,12 @@ def test_calibration_block_carries_sample_audit(tmp_path):
         assert cal["n_samples"] == artifact["training_rows"]
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_training.py -q -k "training_rows or sample_audit or rows"`（若 Step 1 改的是已有用例名，直接跑该用例）
 Expected: FAIL（40≠24；缺 `n_samples` 键 KeyError）
 
-- [ ] **Step 4: 实现**
+- [x] **Step 4: 实现**
 
 `scripts/train_model.py`：
 1. :547 与 :577 两处（先读上下文确认 `train_idx` 在作用域内、变量名一致）：
@@ -116,7 +118,7 @@ Expected: FAIL（40≠24；缺 `n_samples` 键 KeyError）
 
 `scripts/recalibrate.py:88` 传入的 `labels` 经过 `_fit_isotonic_block` 内部自算——**无需改签名**。
 
-- [ ] **Step 5: 补 recalibrate 审计断言（绿）**
+- [x] **Step 5: 补 recalibrate 审计断言（绿）**
 
 `tests/test_drift.py` recalibrate 测试（:138 断言 `fitted_on == "recalibration_set"` 旁）新增：
 
@@ -130,7 +132,7 @@ Expected: FAIL（40≠24；缺 `n_samples` 键 KeyError）
 
 （`<recal输入csv>` = 该测试已有的输入路径变量名；若测试已读过 rows 则直接用其长度。）
 
-- [ ] **Step 6: 重冻结 golden fixtures**
+- [x] **Step 6: 重冻结 golden fixtures**
 
 ```bash
 .venv/Scripts/python scripts/train_model.py --output data/model.json --target-id deterioration_24h
@@ -141,12 +143,12 @@ Expected: FAIL（40≠24；缺 `n_samples` 键 KeyError）
 
 Expected: `--check` 无差异退出 0。fixture 中 `training_rows` 与 `calibration` 字段随之更新。
 
-- [ ] **Step 7: 全套回归**
+- [x] **Step 7: 全套回归**
 
 Run: `.venv/Scripts/python -m pytest -q` + `.venv/Scripts/python -m ruff check .`
 Expected: 196+ 新增测试全绿、ruff 零（若 `test_serving_consistency` 报 fixture 分数差异 → 重跑 Step 6 确认 `--check` 通过；分数本身不应因本任务改变——training_rows/审计字段不参与打分）。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add scripts/train_model.py tests/test_training.py tests/test_drift.py tests/fixtures data
@@ -166,7 +168,7 @@ git commit -m "fix: training_rows counts fit segment and calibration block carri
 
 **关键推理**（执行者须理解，勿走回头路）：`_max_threshold_at_tpr` 返回满足目标 TPR 的**最大**切点。若某档候选 ≤ 上一档，则任何更高切点的 TPR 必然低于该档目标——旧的「抬到下一档」循环产出的档位**永远不达其 TPR 目标**。因此修复不是"抬高后复检"，而是撞档即拒绝。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_thresholds.py` 新增：
 
@@ -185,12 +187,12 @@ def test_derive_thresholds_rejects_collision_that_breaks_tpr():
         derive_thresholds(scores, labels)
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_thresholds.py::test_derive_thresholds_rejects_collision_that_breaks_tpr -q`
 Expected: FAIL（旧实现返回 `{"medium": 0.5, "high": 0.6, "critical": ...}` 不抛）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `scripts/thresholds.py:44-54`，整段替换为：
 
@@ -207,12 +209,12 @@ Expected: FAIL（旧实现返回 `{"medium": 0.5, "high": 0.6, "critical": ...}`
         previous = candidate
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 Run: `.venv/Scripts/python -m pytest tests/test_thresholds.py -q`，再全套 `-q`
 Expected: 全绿（手算 {0.10,0.20,0.30} 用例不撞档；若全套有训练/thresholds 用例撞档报出——停下，在 PR/提交说明中报告该分布，不要回退成静默接受）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/thresholds.py tests/test_thresholds.py
@@ -230,7 +232,7 @@ git commit -m "fix: reject threshold ladder collisions instead of emitting sub-t
 **Interfaces:**
 - Produces: `app.risk.DEFAULT_THRESHOLDS: dict[str, dict[str, float]]` 为唯一阈值字面量来源；`scripts.train_model` 不再定义 `TARGET_THRESHOLDS`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_threshold_defaults_have_single_source():
@@ -244,19 +246,19 @@ def test_threshold_defaults_have_single_source():
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_training.py::test_threshold_defaults_have_single_source -q`
 Expected: FAIL（`TARGET_THRESHOLDS` 仍存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 1. `scripts/train_model.py` 删除 :39-44 的 `TARGET_THRESHOLDS` 字典定义，在 import 区加 `from app.risk import DEFAULT_THRESHOLDS`（`app.risk` 仅标准库，无循环导入——`app.risk` 不 import `scripts`）。
 2. :549、:581 两处 `TARGET_THRESHOLDS[...]` 改为 `DEFAULT_THRESHOLDS[...]`。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套 + ruff**
+- [x] **Step 4: 跑测试确认通过 + 全套 + ruff**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/train_model.py tests/test_training.py
@@ -274,7 +276,7 @@ git commit -m "fix: single-source band thresholds in app.risk.DEFAULT_THRESHOLDS
 **Interfaces:**
 - Produces: `_record_fold_auprc(fold_scores: list[float], test_labels: list[int], pred) -> None` —— 测试折无阳性（`binary_metrics` 返回 `auprc=None`）时跳过该折；两条 CV 路径共用。既有 `if not scores: continue` / `if not auprcs: continue` 全折跳过分支保持。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_record_fold_auprc_skips_positive_free_fold():
@@ -288,12 +290,12 @@ def test_record_fold_auprc_skips_positive_free_fold():
     assert len(bucket) == 1 and 0.0 < bucket[0] <= 1.0
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_training.py::test_record_fold_auprc_skips_positive_free_fold -q`
 Expected: FAIL（ImportError：函数不存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `scripts/train_model.py`（放 `_fit_pipeline` 之前）：
 
@@ -309,12 +311,12 @@ def _record_fold_auprc(fold_scores: list[float], test_labels: list[int], pred) -
 1. logistic 路径 :254-256 的 `value = ...` + `scores.append(value or 0.0)` 两行替换为 `_record_fold_auprc(scores, test_labels, pred)`。
 2. lightgbm 路径 :421-422 的 `metrics = ...` + `auprcs.append(... or 0.0)` 替换为 `_record_fold_auprc(auprcs, test_labels, pred)`（先读上下文核对变量名）。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 Run: `.venv/Scripts/python -m pytest tests/test_training.py tests/test_lightgbm.py -q`，再全套
 Expected: 全绿（CV 行为仅在零阳性折上变化；demo 数据 CV 若有此类折，C 选择可能变化——若导致某用例失败，报告该用例并核对其对 C 的期望是否本就依赖 0.0 计入）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/train_model.py tests/test_training.py
@@ -332,7 +334,7 @@ git commit -m "fix: skip positive-free CV test folds instead of scoring them zer
 **Interfaces:**
 - Produces: `app.risk.factor_label(name: str) -> str` —— `"<base>__missing"` → `f"{LABELS.get(base, base)}缺失"`；其余走 `LABELS.get(name, name)`。两条打分路径统一调用。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_risk_engine.py` 新增：
 
@@ -358,12 +360,12 @@ def test_factor_label_hides_missing_engineering_names():
     assert all("__missing" not in factor.label for factor in score.top_factors)
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_risk_engine.py -q`
 Expected: FAIL（ImportError：`factor_label` 不存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `app/risk.py`（`LABELS` 定义之后）：
 
@@ -382,11 +384,11 @@ def factor_label(name: str) -> str:
 
 :459 `label=LABELS.get(f, f)` 与 :577 `label=LABELS.get(name, name)` 两处替换为 `label=factor_label(...)`。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 （`app/` 仍纯标准库 ✓；若 golden/报告卡有 `__missing` 标签的快照——跑全套确认，报告卡 top_factors 展示随之变化属预期。）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/risk.py tests/test_risk_engine.py tests/test_lightgbm.py
@@ -405,7 +407,7 @@ git commit -m "fix: render missing-indicator factors as 'base feature missing' l
 - Consumes: 既有 CLI `main()`（参数 `--input --model --target-id --top --output`）、`tests/fixtures/deterioration_24h/model.json` 作为 `--model`。
 - Produces: 输出 CSV 表头中 `score`/`uncertainty` 各出现一次（输入已含它们时不再追加重复列）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_active_label.py` 新增：
 
@@ -440,12 +442,12 @@ def test_active_label_cli_dedupes_score_columns(tmp_path, monkeypatch):
     assert len(header) == len(set(header))
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_active_label.py::test_active_label_cli_dedupes_score_columns -q`
 Expected: FAIL（`header.count("score") == 2`）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `scripts/active_label.py:90`：
 
@@ -454,11 +456,11 @@ Expected: FAIL（`header.count("score") == 2`）
     out_fields = list(dict.fromkeys([*fields, "score", "uncertainty"]))
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 （若 `payload_from_row` 对缺列输入报错 → 在输入 CSV 中补齐 `tests/test_active_label.py` 既有用例使用的特征列名，断言不变。）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/active_label.py tests/test_active_label.py
@@ -477,7 +479,7 @@ git commit -m "fix: dedupe score/uncertainty columns in active-label output (P6 
 - Consumes: 既有 harness `_write_gate_artifact(path, version)`、`_write_gate_rows(csv_path, invert_labels)`（tests/test_manage_model.py:6-40）、promote CLI 模式（:399-431）。
 - Produces: 门禁对**输入类错误**（文件不存在、缺 label 列、label 非数字、news2/vitals 非数字）一律 `SystemExit("promotion gate rejected: ...")` 且不留 manifest；**age 问题不拒绝**——age 整列缺失 → `skipped: "age column absent"`（既有），age 部分空/非数值 → `skipped: "age column present but values missing/non-numeric"`（不再抛裸 ValueError 崩门禁）。
 
-- [ ] **Step 1: 写失败测试（4 个）**
+- [x] **Step 1: 写失败测试（4 个）**
 
 `tests/test_manage_model.py` 新增（promote 调用照 :399-431 的 argv 模式）：
 
@@ -565,12 +567,12 @@ def test_gate_age_non_numeric_skips_rule_instead_of_crashing(tmp_path):
 
 （第三行 age 用例同时覆盖部分空：把首行 age 改为 `""` 再跑一遍同样断言，reason 同为值缺失措辞、不含 "absent"——可参数化 `"abc"` 与 `""` 两种值。若 promote 成功路径要求 `split` 键等其他参数，以 :399-431 实际 argv 为准补齐。）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_manage_model.py::test_gate_rejects_input_class_errors_with_unified_message tests/test_manage_model.py::test_gate_age_non_numeric_skips_rule_instead_of_crashing -q`
 Expected: FAIL（文件不存在 → 裸 FileNotFoundError traceback；age "abc" → 裸 ValueError）
 
-- [ ] **Step 3: 实现（scripts/manage_model.py）**
+- [x] **Step 3: 实现（scripts/manage_model.py）**
 
 1. 读文件（:116-117）：
 
@@ -637,12 +639,12 @@ Expected: FAIL（文件不存在 → 裸 FileNotFoundError traceback；age "abc"
         rules["subgroup"] = {"status": "skipped", "reason": "age column absent"}
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 Run: `.venv/Scripts/python -m pytest tests/test_manage_model.py tests/test_report_card.py tests/test_production_controls.py -q`，再全套
 Expected: 既有 `test_gate_rules_degrade_when_columns_absent`（缺列 → "age column absent"）与 report_card 测试保持绿。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/manage_model.py tests/test_manage_model.py
@@ -660,7 +662,7 @@ git commit -m "fix: unify promotion-gate input rejections and degrade age rule g
 **Interfaces:**
 - Produces: `scripts.make_golden.DEFAULT_ARTIFACTS: dict[str, Path]` 值取自 `Settings.model_fields[...].default`（类字段默认，**不用实例**——实例会读环境变量污染 golden 语义）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_make_golden_default_artifacts_track_settings_defaults():
@@ -676,11 +678,11 @@ def test_make_golden_default_artifacts_track_settings_defaults():
     )
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Expected: FAIL（断言通过实现细节巧合相等的话即绿——若 Step 1 直接通过，说明双写恰好相等，把断言改为结构性检查：`assert "data/model.json" not in Path("scripts/make_golden.py").read_text(encoding="utf-8")`，钉住"字面量不得回流"，仍算有效红→绿。）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `scripts/make_golden.py:24-27`：
 
@@ -695,11 +697,11 @@ DEFAULT_ARTIFACTS = {
 
 （`from app.config import Settings` 已在 :15 导入。）
 
-- [ ] **Step 4: 跑测试确认通过 + `make_golden --check` + 全套**
+- [x] **Step 4: 跑测试确认通过 + `make_golden --check` + 全套**
 
 Run: `.venv/Scripts/python scripts/make_golden.py --check`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/make_golden.py tests/<file>
@@ -724,7 +726,7 @@ git commit -m "fix: derive golden default artifacts from Settings field defaults
 - `tests/test_evaluation.py:6-9` 断言 `auprc == 1.0` 的用例分数**无平局** → 修复后仍 1.0，不动。
 - `_write_gate_rows` 的模型分数由 creatinine 两点定线且与标签同源 → 模型 AP 仍 1.0；news2 baseline 恒定 → `baseline_auprc` 0.25→ 由 1.0 变 0.25；`invert_labels` 拒绝路径 baseline 也变 0.25 → **必须跑拒绝用例确认仍拒绝**。
 
-- [ ] **Step 1: 写失败测试（红）**
+- [x] **Step 1: 写失败测试（红）**
 
 `tests/test_evaluation.py` 新增：
 
@@ -759,12 +761,12 @@ def test_binary_metrics_auprc_matches_tie_aware_reference():
         assert got == pytest.approx(average_precision_score(labels, scores), abs=1e-12)
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_evaluation.py -q -k "prevalence or tie_aware"`
 Expected: FAIL（恒分得 1.0；`_tie_aware_auprc_reference` 尚不存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 1. **独立参照**（`tests/test_evaluation.py`，新增在旧 `_quadratic_auprc_reference` 旁；旧函数保留给无平局用例）：
 
@@ -823,12 +825,12 @@ def _tie_aware_auprc_reference(labels: list[int], scores: list[float]) -> float:
 
 3. `tests/test_evaluation.py:271-302`：把 `_quadratic_auprc_reference` 参与**有平局数据**的对照断言改为 `_tie_aware_auprc_reference`（无平局对照保留——两参照在无平局时数值相同）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `.venv/Scripts/python -m pytest tests/test_evaluation.py -q`
 Expected: 全绿（含既有 100k 行 `0 < auprc <= 1` 用例与位级对照用例）
 
-- [ ] **Step 5: 门禁 fixture 同步 + 应急步骤**
+- [x] **Step 5: 门禁 fixture 同步 + 应急步骤**
 
 1. 更新 `tests/test_manage_model.py:6-9` docstring：
 
@@ -844,12 +846,14 @@ Expected: 全绿（含既有 100k 行 `0 < auprc <= 1` 用例与位级对照用�
    - **应急**：若 `invert_labels` 拒绝用例失效（模型 AP 的 CI lo 意外 ≥ baseline），在 `_write_gate_rows` 把 invert 情形的标签翻转扩展到两档 creatinine 使模型排序与标签完全反向（AP→近 0），断言语义不变。
 3. 同步检查 `evaluate`/`report_card` 相关断言：Run `pytest tests/test_evaluation.py tests/test_report_card.py tests/test_validation.py -q`。
 
-- [ ] **Step 6: 全套回归 + ruff**
+- [x] **Step 6: 全套回归 + ruff**
 
 Run: `.venv/Scripts/python -m pytest -q`（含 @slow 冒烟——门禁 baseline 变化会流经 1500 规模演练，预期 pass：baseline 变低只会让"模型≥基线"更易满足）
 Expected: 全绿。若冒烟 gate 用例断言了 baseline 具体数值 → 按新语义更新其期望值（prevalence 口径），并在提交说明里列出改动的数值断言。
 
-- [ ] **Step 7: Commit**
+> **执行期补录（计划外裁定，终审背书）**：冒烟门禁在平局修复后**双双失败**（均为 facility 规则）——根因是旧平局 bug 把「全局基线」与「各院区模型值」同时虚高，弱院区靠虚高差值侥幸通过。裁定两件事（台账 Task 9 Ruling，commit `bb92987`）：① `per_facility_auprc` 改收 `baseline_scores`，按**同院区行**算基线点估计（AUPRC 依赖患病率，跨总体比较统计无效；主规则本就是同行比较）；② facility 阳性下限 5→10，对齐 R-P7-6 亚组口径（个位数阳性的 AUPRC 点估计方差无意义）。验算后冒烟全绿——这是本轮 stakes 最高的行为变更。
+
+- [x] **Step 7: Commit**
 
 ```bash
 git add scripts/evaluate_model.py tests/test_evaluation.py tests/test_manage_model.py
@@ -867,7 +871,7 @@ git commit -m "fix: tie-aware average precision — constant scores yield preval
 **Interfaces:**
 - Produces: `_lgbm_search_space(trial) -> dict` —— 搜索空间构建函数（不 import optuna，trial 走 duck typing）；空间恒含 `subsample_freq ≥ 1`，最终模型参数 = `{**study.best_params, ...}` 含生效的 `subsample_freq`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `tests/test_lightgbm.py` 新增：
 
@@ -895,12 +899,12 @@ def test_lgbm_search_space_pairs_subsample_with_freq():
     assert space["subsample_freq"] >= 1  # LightGBM 默认 0 = 不启用 bagging
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_lightgbm.py::test_lgbm_search_space_pairs_subsample_with_freq -q`
 Expected: FAIL（ImportError）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `scripts/train_model.py`，在 `_fit_lightgbm` 外新增：
 
@@ -924,12 +928,12 @@ objective 内（:394-403）替换为 `params = _lgbm_search_space(trial)`。
 
 **必须核对**：读 :430-445，`study.best_params` 传给最终 `LGBMClassifier` 处——`suggest_int` 的 `subsample_freq` 会自然进入 `best_params` ✓；若最终模型用**独立的 params dict** 而非 `best_params`，则在该 dict 中显式补 `"subsample_freq": 1`（原缺陷即在此）。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 Run: `.venv/Scripts/python -m pytest tests/test_lightgbm.py -q`，再全套
 Expected: 全绿（Optuna 路径无既有单测，`@slow` 冒烟不含 lightgbm；若本机装了 optuna 可手动 `--algorithm lightgbm --trials 2` 冒烟——非必需）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/train_model.py tests/test_lightgbm.py
@@ -945,10 +949,10 @@ git commit -m "fix: pair Optuna subsample with subsample_freq so bagging is actu
 - Test: `tests/test_validation.py`
 
 **Interfaces:**
-- Consumes: 既有签名 `subgroup_sensitivity_diff(labels, scores, groups, threshold, *, min_positives=10) -> float | None`、`per_facility_auprc(rows, labels, scores, baseline_auprc, *, facility_column="facility_id", min_rows=20, min_positives=5) -> dict`。
+- Consumes: 既有签名 `subgroup_sensitivity_diff(labels, scores, groups, threshold, *, min_positives=10) -> float | None`、`per_facility_auprc(rows, labels, scores, baseline_scores, *, facility_column="facility_id", min_rows=20, min_positives=10) -> dict`（**执行期经 Task 9 裁定已从 `baseline_auprc: float`/`min_positives=5` 变更——本行以实际代码为准**）。
 - Produces: 全部院区被跳过时返回 `{"checked": False, "worst": None, "failures": [], "reason": "all facilities skipped (min_rows/min_positives)"}`——消费方（manage_model:177-179、report_card:377-378）既有 `checked=False` 分支走 skipped；`subgroup_sensitivity_diff` ≥3 组返回 `max(灵敏度) - min(灵敏度)`。
 
-- [ ] **Step 1: 写失败测试（2 个）**
+- [x] **Step 1: 写失败测试（2 个）**
 
 `tests/test_validation.py` 新增：
 
@@ -979,12 +983,12 @@ def test_subgroup_sensitivity_diff_considers_all_groups():
     assert diff == pytest.approx(1.0)
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_validation.py -q -k "all_skipped or all_groups"`
 Expected: FAIL（现状返回 `checked=True`；三组 diff 返回 0.0）
 
-- [ ] **Step 3: 实现（scripts/validate.py）**
+- [x] **Step 3: 实现（scripts/validate.py）**
 
 1. `subgroup_sensitivity_diff` 末行（:195）：
 
@@ -1021,12 +1025,12 @@ Expected: FAIL（现状返回 `checked=True`；三组 diff 返回 0.0）
     return {"checked": True, "worst": worst, "failures": failures}
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
 Run: `.venv/Scripts/python -m pytest tests/test_validation.py tests/test_manage_model.py tests/test_report_card.py -q`，再全套
 Expected: 既有两院区 pass/fail 用例保持绿（它们 `evaluated ≥ 1`）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/validate.py tests/test_validation.py
@@ -1045,7 +1049,7 @@ git commit -m "fix: facility rule unchecked when all skipped; subgroup diff span
 - Consumes: 既有 `run_promotion_gate(candidate_path, target_id, gate_path)`（门禁内部检查保留为其他调用方的兜底）。
 - Produces: `_validated_labels(rows, *, context: str) -> list[int]` —— 严格接受字符串 `"0"`/`"1"`（`int("2")`、`"0.5"`、`"-1"`、`"1.0"` 全拒，拒绝语 `f"recalibrate: row {i} needs label 0/1"`）；单类拒绝语 `f"recalibrate: {context} needs both classes"`（context ∈ {"--input", "gate-input"}）。`--gate-input` 在进门前禁前预检。
 
-- [ ] **Step 1: 写失败测试（红）**
+- [x] **Step 1: 写失败测试（红）**
 
 `tests/test_drift.py` 新增：
 
@@ -1083,12 +1087,12 @@ def test_recalibrate_rejects_non_binary_labels(tmp_path, bad_label):
 
 （具体工件/argv 复制自 `tests/test_drift.py:71-169` 的既有测试，改 label 值。）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_drift.py -q -k "non_binary or prechecked"`
 Expected: FAIL（"2"/"1.0" 被放行；全零 gate 的拒绝语是门禁的 "holdout needs..." 不匹配新 match）
 
-- [ ] **Step 3: 实现（scripts/recalibrate.py）**
+- [x] **Step 3: 实现（scripts/recalibrate.py）**
 
 1. 模块级新增：
 
@@ -1126,7 +1130,7 @@ def _validated_labels(rows: list[dict], *, context: str) -> list[int]:
 
 4. 门禁内部 `manage_model.py:126-128` 的既有检查**保留**（其他调用方兜底）。
 
-- [ ] **Step 4: 同步既有测试期望（红变绿的合法更新）**
+- [x] **Step 4: 同步既有测试期望（红变绿的合法更新）**
 
 `tests/test_drift.py:140-169`（全零 gate-input 用例）：若其 `pytest.raises` 带 `match` 指向门禁旧文案，改为：
 
@@ -1136,12 +1140,12 @@ def _validated_labels(rows: list[dict], *, context: str) -> list[int]:
 
 若原是裸 `raises(SystemExit)` 则不动（新拒绝同样命中）。docstring 中「拒绝语来自门禁」的注释同步改为「来自 recalibrate 预检」。
 
-- [ ] **Step 5: 跑测试确认通过 + 全套**
+- [x] **Step 5: 跑测试确认通过 + 全套**
 
 Run: `.venv/Scripts/python -m pytest tests/test_drift.py -q`，再全套
 Expected: 全绿（校准拟合路径不再收到非 0/1 标签）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts/recalibrate.py tests/test_drift.py
@@ -1160,7 +1164,7 @@ git commit -m "fix: strict 0/1 label parsing and gate-input precheck in recalibr
 
 **关键保证**（执行者须知）：isotonic 在其拟合样本上单调最小化平方误差，而未校准分数是 margin 的单调函数 → 只要评估数据 == 拟合数据（同 seed 重建），`brier_cal <= brier_raw` 数学上成立、不会 flaky。**必须用 `build_demo_dataset("readmission_30d", 480)` 重建**——`_train` 固定 `--rows 480`（tests/test_training.py:16）。
 
-- [ ] **Step 1: 写失败测试（红）**
+- [x] **Step 1: 写失败测试（红）**
 
 `tests/test_training.py`，在 `test_readmission_uses_isotonic_calibration` 末尾（既有形状断言之后）追加：
 
@@ -1205,18 +1209,18 @@ git commit -m "fix: strict 0/1 label parsing and gate-input precheck in recalibr
 
 （`Settings` 若该测试文件尚未 import，在函数内 `from app.config import Settings`；`build_demo_dataset` 对 readmission 返回 `(times, matrix, labels)`，`times` 即 payload 字典序列——参考 `scripts/make_golden.py:44-49` 的用法。）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_training.py::test_readmission_uses_isotonic_calibration -q`
 Expected: FAIL（当前无 Brier 断言 → ImportError/AttributeError 之外的失败形态应为断言缺失；若追加即绿，说明数据没对上拟合集——核对 `_train` 的 size 常量与 `build_demo_dataset` 调用参数完全一致后再跑。）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 本任务为纯测试增强（追加上述断言）；实现无需改动。若 Step 2 显示 isotonic 真的劣化 Brier（数据同源前提下不应发生）→ 停下报告，不得弱化断言。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_training.py
@@ -1232,7 +1236,7 @@ git commit -m "test: pin readmission isotonic calibration Brier non-regression (
 
 **Interfaces:** 纯文档，无代码消费方。文档事实依据：`scripts/monitor_drift.py:67-79,132-140`、`app/features.py:103-118`、`scripts/train_model.py:442-470`。
 
-- [ ] **Step 1: 写文档（失败测试不适用——本任务为 spec 型修复，用事实核查清单代替红灯）**
+- [x] **Step 1: 写文档（失败测试不适用——本任务为 spec 型修复，用事实核查清单代替红灯）**
 
 在 `docs/architecture.md` 批量漂移检查段落（:37 附近）之后补充：
 
@@ -1246,11 +1250,11 @@ git commit -m "test: pin readmission isotonic calibration Brier non-regression (
 **校准方法与分辨率回退（Ruling R-P7-5/5a）**：校准默认 isotonic 回归；当拟合段唯一 y 水平 < 3（分数会坍缩成二值、摧毁阈值阶梯与分带）时自动回退 Platt，并在工件 `calibration` 块记录 `fallback_reason: isotonic_resolution`。demo deterioration 触发该回退属预期；真实数据阳性数充足时走真 isotonic。
 ```
 
-- [ ] **Step 2: 事实核查（对照实现逐句确认）**
+- [x] **Step 2: 事实核查（对照实现逐句确认）**
 
 对照 `scripts/monitor_drift.py`（列名/派生编码/缺失行为）、`app/features.py`（两派生列名与源字段清单）、`scripts/train_model.py:442-470`（回退条件与 `fallback_reason` 值）逐句核对文档新增文字——任何对不上就改文档（不改代码）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/architecture.md
@@ -1265,7 +1269,7 @@ git commit -m "docs: drift input CSV schema and isotonic resolution fallback (P7
 - Modify: `scripts/train_model.py:44`
 - Test: `tests/test_training.py`
 
-- [ ] **Step 1: 写失败测试（红）**
+- [x] **Step 1: 写失败测试（红）**
 
 ```python
 def test_readmission_positive_rate_dead_constant_removed():
@@ -1275,18 +1279,18 @@ def test_readmission_positive_rate_dead_constant_removed():
     assert not hasattr(train_model, "READMISSION_POSITIVE_RATE")
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_training.py::test_readmission_positive_rate_dead_constant_removed -q`
 Expected: FAIL（常量仍存在）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 删除 `scripts/train_model.py:44` 的 `READMISSION_POSITIVE_RATE = 0.08` 一行（先全仓 grep 确认 scripts/app/tests 零引用——docs/STATUS/旧计划中的提及是历史记录不删）。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套 + ruff**
+- [x] **Step 4: 跑测试确认通过 + 全套 + ruff**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/train_model.py tests/test_training.py
@@ -1304,7 +1308,7 @@ git commit -m "chore: remove dead READMISSION_POSITIVE_RATE constant (P8 deferre
 **Interfaces:**
 - Consumes: 既有 `scripts/import_clinical_data.py:70-76` summary（键：`patients`、`events`、`discharge_events`、`commit`、`event_types`；`--commit` 后追加 `accepted_events`、`duplicate_events`）。
 
-- [ ] **Step 1: 写失败测试（红）**
+- [x] **Step 1: 写失败测试（红）**
 
 `tests/test_import.py` 新增（构造沿用 :12-39 的最小 patients/events，事件含 1 条 discharge）：
 
@@ -1319,11 +1323,11 @@ def test_import_summary_counts_discharge_events(tmp_path):
 
 （具体调用复用 `tests/test_import.py` 中已有 dry-run 用例的构造。）
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Expected: FAIL 于**文档断言不可测的部分不适用**——测试本身对实现应直接为绿（实现已有该键）。**本项的红灯** = 文档 diff：先做 Step 3 改文档，再把测试跑绿一起提交；测试是防实现回退的钉子。若实现真缺该键 → 先修实现。
 
-- [ ] **Step 3: 改文档**
+- [x] **Step 3: 改文档**
 
 `docs/data-integration-design.md:159` 字段清单：
 
@@ -1331,9 +1335,9 @@ Expected: FAIL 于**文档断言不可测的部分不适用**——测试本身�
 summary 输出字段：`patients`、`events`、`discharge_events`、`commit`、`event_types`；`--commit` 后追加 `accepted_events`、`duplicate_events`（T2.4 落地后中途失败会附 partial summary：accepted/failed 计数 + 最后成功键）。
 ```
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add docs/data-integration-design.md tests/test_import.py
@@ -1350,7 +1354,7 @@ git commit -m "docs: add discharge_events to import summary field list, pin with
 **Interfaces:**
 - Consumes: `scripts.manage_model.load_artifact(path, target_id, version=None)`（:51-68）；白名单 readmission 半边 = `{tuple(FEATURES), tuple(READMISSION_FEATURES)}`（`FEATURES` 来自 `app.synthetic`，10 维旧 vitals）。
 
-- [ ] **Step 1: 写失败测试（红——缺测试即失败的「覆盖钉」，用新测试文件段落落地）**
+- [x] **Step 1: 写失败测试（红——缺测试即失败的「覆盖钉」，用新测试文件段落落地）**
 
 `tests/test_manage_model.py` 新增：
 
@@ -1386,18 +1390,18 @@ def test_load_artifact_rejects_unknown_signature(tmp_path):
         load_artifact(bad, "readmission_30d")
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_manage_model.py -q -k "legacy_vitals or unknown_signature"`
 Expected: 若 `load_artifact` 要求更多字段（如 `weights`）而 KeyError → 按实际校验路径补最小字段（保持签名白名单断言语义）；新测试缺位为本项缺陷本身——测试落地后两用例应直接证明白名单双半边（先跑确认现有实现通过或暴露真实缺口，真实缺口 → 报告并修实现）。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 本任务默认纯测试（白名单实现已在 R-P8-9 落地）。若 Step 2 暴露真实拒绝 → 修 `load_artifact` 白名单并在提交说明记录。
 
-- [ ] **Step 4: 跑测试确认通过 + 全套**
+- [x] **Step 4: 跑测试确认通过 + 全套**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_manage_model.py
@@ -1419,11 +1423,11 @@ git commit -m "test: pin both promote-whitelist halves for readmission artifacts
 
 **语义边界（契约措辞不得越界）**：承诺顺序到达下的"钉首个出院"；乱序到达（后出院先入库）受 `upsert_score` 防倒退保护，不承诺回改。
 
-- [ ] **Step 1: 审计 api.py**
+- [x] **Step 1: 审计 api.py**
 
 Grep `app/api.py` 中 readmission 打分路径：若 :27-33 `score_all_targets` 与 :283-294 同步入库后打分**委托** `worker.score_event` → 只改 worker；若有**内联打分循环** → 把下述守卫抽成共享函数（放 `app/worker.py` 导出，api import）。在提交说明记录结论。
 
-- [ ] **Step 2: 写失败测试（红）**
+- [x] **Step 2: 写失败测试（红）**
 
 `tests/test_worker.py` 新增（构造沿用 :165-200 既有双事件用例的 store/engines 模板）：
 
@@ -1457,12 +1461,12 @@ def test_second_discharge_event_does_not_rescore_readmission(store, engines):
 
 （`store`/`engines` fixture 或工厂按既有用例 :123-200 的获取方式；`add_event` 以实际 store API 名为准——既有用例都是"先入库再 score_event"，照抄其入库调用。）同步在 `tests/test_api.py` 同步 ingest 路径加同款双出院断言（沿 :527-570 模板）。
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `.venv/Scripts/python -m pytest tests/test_worker.py -q -k "second_discharge"`
 Expected: FAIL（现状 `after.as_of == d2.occurred_at`、`scored_at` 变化）
 
-- [ ] **Step 4: 实现（app/worker.py）**
+- [x] **Step 4: 实现（app/worker.py）**
 
 `score_event` 内（:155-159 的 target 循环）：
 
@@ -1489,7 +1493,7 @@ Expected: FAIL（现状 `after.as_of == d2.occurred_at`、`scored_at` 变化）
 
 （`score_event` 为逐事件函数，`targets_for_event` 已保证走到 readmission 时 `event` 必是出院事件 → `discharges` 非空。若 Step 1 发现 api 有内联循环，抽出 `readmission_should_score(store, event) -> bool` 共享。）
 
-- [ ] **Step 5: 跑测试确认通过 + 契约措辞**
+- [x] **Step 5: 跑测试确认通过 + 契约措辞**
 
 1. Run: `.venv/Scripts/python -m pytest tests/test_worker.py tests/test_api.py -q`
 2. `docs/data-contract.md:57` 改为：
@@ -1498,11 +1502,11 @@ Expected: FAIL（现状 `after.as_of == d2.occurred_at`、`scored_at` 变化）
 `readmission_30d` 只在 `event_type == "discharge"` 的出院事件上评分（**单次评分，`as_of` 钉在首个出院事件时刻**，后续生命体征不刷新）；同一就诊的**后续出院事件不重打分**——live 事件路径与批量 reconcile 的口径一致（事件按到达序处理，乱序到达的边界由评分防倒退机制兜底）。非出院事件的 `scores` 只含 deterioration。
 ```
 
-- [ ] **Step 6: 全套回归**
+- [x] **Step 6: 全套回归**
 
 Expected: 既有单出院用例（test_api:527-570、test_worker:165-247）全绿——它们首出院即唯一出院，守卫条件为真、行为不变。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/worker.py app/api.py docs/data-contract.md tests/test_worker.py tests/test_api.py
@@ -1522,7 +1526,7 @@ git commit -m "fix: live readmission scoring pinned to first discharge, aligned 
 **Interfaces:**
 - Consumes: `app.domain.DISCHARGE_SNAPSHOT_FIELDS`（6 项）、`app.features.READMISSION_PAYLOAD_KEYS`（6 项，集合相等、顺序不同）。
 
-- [ ] **Step 1: 写失败测试（红——测试缺位即缺陷）**
+- [x] **Step 1: 写失败测试（红——测试缺位即缺陷）**
 
 `tests/test_features.py` 新增：
 
@@ -1536,7 +1540,7 @@ def test_discharge_snapshot_fields_match_readmission_payload_keys():
     assert set(DISCHARGE_SNAPSHOT_FIELDS) == set(READMISSION_PAYLOAD_KEYS)
 ```
 
-- [ ] **Step 2: 重构 `tests/test_import.py:128-152`**
+- [x] **Step 2: 重构 `tests/test_import.py:128-152`**
 
 把逐个手写字段名的缺失断言改为遍历（消除第三份手写清单）：
 
@@ -1552,12 +1556,12 @@ def test_discharge_snapshot_fields_match_readmission_payload_keys():
 
 （`full_valid_payload` = 既有 :154-207 合法 payload 的变量；保留其原用例。）
 
-- [ ] **Step 3: 跑测试确认通过**
+- [x] **Step 3: 跑测试确认通过**
 
 Run: `.venv/Scripts/python -m pytest tests/test_features.py tests/test_import.py -q`
 Expected: 全绿（实现两常量本就相等——本任务为覆盖钉 + 消除漂移风险面；若不相等则为真实缺陷，报告并修实现/文档）。
 
-- [ ] **Step 4: 全套 + Commit**
+- [x] **Step 4: 全套 + Commit**
 
 ```bash
 git add tests/test_features.py tests/test_import.py
@@ -1574,7 +1578,7 @@ git commit -m "test: pin discharge snapshot and readmission payload field parity
 **Interfaces:**
 - Consumes: 既有 `_write_lace_artifact`（:174-199）、`_write_lace_rows`（:160-172）、promote argv 模式（:399-431）；拒绝链 `baselines.lace_score` ValueError（"lace fields missing/invalid: <field>"）→ `manage_model` 包装 `SystemExit("promotion gate rejected: ...")`（:144-153）。
 
-- [ ] **Step 1: 写失败测试（红——集成覆盖缺位即缺陷）**
+- [x] **Step 1: 写失败测试（红——集成覆盖缺位即缺陷）**
 
 `tests/test_manage_model.py` 新增：
 
@@ -1613,12 +1617,12 @@ def test_promote_gate_rejects_holdout_missing_lace_field(tmp_path):
 
 （实现链已存在（unit 级 test_lace.py:68-81 + manage_model:149-153 包装）→ 测试落地预期直接绿；若红说明集成链有真缺口 → 修 `run_promotion_gate` 的包装覆盖。）
 
-- [ ] **Step 2: 跑测试**
+- [x] **Step 2: 跑测试**
 
 Run: `.venv/Scripts/python -m pytest tests/test_manage_model.py::test_promote_gate_rejects_holdout_missing_lace_field -q`
 Expected: 绿（覆盖钉）或红（真缺口 → 修实现，提交说明记录）。
 
-- [ ] **Step 3: 全套 + Commit**
+- [x] **Step 3: 全套 + Commit**
 
 ```bash
 git add tests/test_manage_model.py
@@ -1632,7 +1636,7 @@ git commit -m "test: integration coverage for gate SystemExit on missing LACE fi
 **Files:**
 - Modify: `docs/superpowers/STATUS.md`（Deferred 节、验证基线数字 194→196）
 
-- [ ] **Step 1: 全量终验**
+- [x] **Step 1: 全量终验**
 
 ```bash
 .venv/Scripts/python -m pytest -q
@@ -1641,20 +1645,20 @@ git commit -m "test: integration coverage for gate SystemExit on missing LACE fi
 ```
 Expected: 全绿、ruff 零、golden 无差异。
 
-- [ ] **Step 2: 更新 STATUS.md**
+- [x] **Step 2: 更新 STATUS.md**
 
 - 「终审 Deferred Minors（24 项，未修）」节标题改为「（24 项，**已于 2026-10-13 清偿**，逐项映射见 `docs/superpowers/plans/2026-10-13-medintel-deferred-minors.md`）」，正文保留原文供追溯。
 - 验证基线行的 `194 passed` 更正为实测数字。
 - 「当前状态」加一行：24 项 deferred 清偿完成（21 任务、行为修复 14 项、覆盖钉 6 项、文档 2 组）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/superpowers/STATUS.md
 git commit -m "docs: close out 24 deferred minors with plan mapping"
 ```
 
-- [ ] **Step 4: 推送（需用户确认）**
+- [x] **Step 4: 推送（需用户确认）**
 
 经代理推送（本机直连 github 443 不通）：
 

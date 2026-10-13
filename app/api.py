@@ -34,11 +34,7 @@ def score_all_targets(
     targets = targets_for_event(event)
     if "readmission_30d" in targets and not is_first_discharge(store, event):
         targets = [target_id for target_id in targets if target_id != "readmission_30d"]
-    return [
-        engines[target_id].score(event)
-        for target_id in targets
-        if target_id in engines
-    ]
+    return [engines[target_id].score(event) for target_id in targets if target_id in engines]
 
 
 def build_router(store: Store, engine: RiskEngine, settings: Settings) -> APIRouter:

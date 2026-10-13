@@ -555,14 +555,12 @@ def test_gate_rejects_input_class_errors_with_unified_message(tmp_path):
     cases = {
         "missing_label": "encounter_id,creatinine\nenc-0001,3.0\nenc-0002,0.8\n",
         "non_numeric_label": (
-            "encounter_id,creatinine,label\n"
-            + ("enc-0001,3.0,x\nenc-0002,0.8,0\n" * 8)
+            "encounter_id,creatinine,label\n" + ("enc-0001,3.0,x\nenc-0002,0.8,0\n" * 8)
         ),
         # age 是模型特征：非数值 age 在行级构造事件即为无效行 → 统一拒绝语
         # （P7 deferred 1 裁定：不可降级为 subgroup skipped）
         "non_numeric_age": (
-            "encounter_id,creatinine,label,age\n"
-            + ("enc-0001,3.0,1,abc\nenc-0002,0.8,0,70\n" * 8)
+            "encounter_id,creatinine,label,age\n" + ("enc-0001,3.0,1,abc\nenc-0002,0.8,0,70\n" * 8)
         ),
     }
     for name, body in cases.items():
@@ -614,8 +612,7 @@ def test_gate_partial_age_values_skip_rule_with_honest_reason(tmp_path):
     """P7 deferred 1：部分行 age 为空 → subgroup skipped，措辞必须是「列在但值
     缺失」而非 "age column absent"；门禁照常完成（空值行 payload 省略 age 可评分）。"""
     header = (
-        "encounter_id,creatinine,heart_rate,respiratory_rate,"
-        "systolic_bp,spo2,temperature,label,age"
+        "encounter_id,creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,label,age"
     )
     lines = [header]
     for i in range(16):

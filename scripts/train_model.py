@@ -375,6 +375,22 @@ def _drift_reference(
     return reference
 
 
+def _lgbm_search_space(trial) -> dict:
+    """Optuna 搜索空间（P7 deferred 2：subsample 必须配 subsample_freq≥1，
+    否则 LightGBM 默认 freq=0 直接忽略 bagging，该维度搜索无效；经 suggest 的
+    freq 会自然进入 study.best_params，最终模型同样生效）。"""
+    return {
+        "n_estimators": trial.suggest_int("n_estimators", 50, 400),
+        "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
+        "num_leaves": trial.suggest_int("num_leaves", 7, 63),
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 60),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "subsample_freq": trial.suggest_int("subsample_freq", 1, 5),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
+    }
+
+
 def _fit_lightgbm(
     times: list[dict],
     matrix: list[list[float]],
@@ -398,15 +414,7 @@ def _fit_lightgbm(
     monotone = MONOTONE_CONSTRAINTS_BY_TARGET[target_id]
 
     def objective(trial: "optuna.Trial") -> float:
-        params = {
-            "n_estimators": trial.suggest_int("n_estimators", 50, 400),
-            "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.2, log=True),
-            "num_leaves": trial.suggest_int("num_leaves", 7, 63),
-            "min_child_samples": trial.suggest_int("min_child_samples", 5, 60),
-            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
-        }
+        params = _lgbm_search_space(trial)
         auprcs: list[float] = []
         eces: list[float] = []
         for train_rows, test_rows in folds:

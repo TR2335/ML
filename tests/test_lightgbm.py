@@ -175,6 +175,31 @@ def test_tree_path_contributions_sum_to_logit(tmp_path):
     assert all("__missing" not in factor.label for factor in score.top_factors)
 
 
+def test_lgbm_search_space_pairs_subsample_with_freq():
+    """P7 deferred 2：subsample 必须配 subsample_freq>0，否则 LightGBM 忽略 bagging，
+    整个搜索维度无效；suggest 出的 freq 会自然进入 study.best_params → 最终模型同样生效。"""
+
+    class _StubTrial:
+        def __init__(self):
+            self.names = []
+
+        def suggest_int(self, name, low, high, **kwargs):
+            self.names.append(name)
+            return low
+
+        def suggest_float(self, name, low, high, log=False, **kwargs):
+            self.names.append(name)
+            return low
+
+    from scripts.train_model import _lgbm_search_space
+
+    trial = _StubTrial()
+    space = _lgbm_search_space(trial)
+    assert "subsample" in space and "subsample_freq" in space
+    assert space["subsample_freq"] >= 1  # LightGBM 默认 0 = 不启用 bagging
+    assert "subsample_freq" in trial.names  # 经 suggest → 进 study.best_params
+
+
 def test_tree_engine_rejects_corrupt_trees_block(tmp_path):
     """坏 trees 块响亮拒绝，不静默回落打分（Review 口径）。"""
     import pytest

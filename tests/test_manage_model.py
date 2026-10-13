@@ -5,8 +5,9 @@ from pathlib import Path
 
 def _write_gate_rows(csv_path: Path, invert_labels: bool) -> None:
     """16 行留出集、25% 阳性：空阳性 bootstrap 抽样 0.75^16≈1.0% < 2.5% 分位，
-    保证 CI lo 可用；news2 分量恒定 → binary_metrics 元组平局按 label 降序 →
-    AUPRC=1.0（既有行为，见台账 Task 3 Ruling）。"""
+    保证 CI lo 可用；news2 分量恒定 → 平局分组口径下 baseline_auprc = prevalence
+    0.25（P6 deferred 9 修复后；修复前元组平局虚高为 1.0）。
+    模型分数由 creatinine 两点定线且与标签同源 → 模型 AUPRC 恒为 1.0。"""
     header = (
         "encounter_id,creatinine,heart_rate,respiratory_rate,systolic_bp,spo2,temperature,label"
     )

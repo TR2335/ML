@@ -49,7 +49,6 @@ def binary_metrics(
 ) -> dict[str, float | int | None]:
     positives = sum(labels)
     negatives = len(labels) - positives
-    pairs = sorted(zip(scores, labels), reverse=True)
     ascending = sorted(zip(scores, labels))
     rank_sum = 0.0
     index = 0
@@ -68,15 +67,27 @@ def binary_metrics(
     tp = sum(label == 1 and score >= threshold for label, score in zip(labels, scores))
     fp = sum(label == 0 and score >= threshold for label, score in zip(labels, scores))
     tn = negatives - fp
-    # AUPRC（average precision）单遍累积 O(n log n)：前缀和是精确整数加法，与旧
-    # O(n²) 逐 index sum 位级一致（R-RS-11；tests/test_evaluation.py 对照钉住）。
-    # 40 万行规模下旧实现需 1e10 级操作，评估/门禁/bootstrap 全部不可行。
+    # AUPRC（average precision）按分数分组单遍累积 O(n log n)：同分组在组边界统一
+    # 计 precision×Δrecall（sklearn 平局语义）。修复前逐行排序在平局时让 label=1
+    # 置前、恒分输入得 1.0（P6 deferred 9）；恒分现在得 prevalence。
+    # 40 万行规模下旧 O(n²) 实现需 1e10 级操作，评估/门禁/bootstrap 全部不可行。
+    ordered = sorted(zip(scores, labels), key=lambda item: item[0], reverse=True)
     cumulative_tp = 0
+    seen = 0
     auprc = 0.0
     previous_recall = 0.0
-    for index, (_, label) in enumerate(pairs, start=1):
-        cumulative_tp += label
-        precision = cumulative_tp / index
+    index = 0
+    while index < len(ordered):
+        score_value = ordered[index][0]
+        group_tp = 0
+        group_size = 0
+        while index < len(ordered) and ordered[index][0] == score_value:
+            group_tp += ordered[index][1]
+            group_size += 1
+            index += 1
+        cumulative_tp += group_tp
+        seen += group_size
+        precision = cumulative_tp / seen
         recall = cumulative_tp / positives if positives else 0.0
         auprc += precision * max(recall - previous_recall, 0)
         previous_recall = recall

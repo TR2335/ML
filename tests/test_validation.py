@@ -120,8 +120,10 @@ def test_per_facility_auprc_requires_two_facilities():
     labels2 = labels + labels
     both = per_facility_auprc(rows2, labels2, scores + scores, baseline_auprc=0.3)
     assert both["checked"] is True and not both["failures"]
-    # h2 反向排序：10 阳性压到 20 阴性之后 → AUPRC≈0.21 < 基线 0.3 → 拒
-    inverted2 = scores + [0.05] * 10 + [0.9] * 20
+    # h2 反向排序：10 阳性压到 20 阴性之后 → AUPRC≈0.21 < 基线 0.3 → 拒。
+    # P6 deferred 9：阳性给互异低分——同分组在平局分组口径下 AP=prevalence
+    # (1/3) 跌不破基线，只有逐档劣化排序才构造得出「坏院区」。
+    inverted2 = scores + [0.01 * i for i in range(10)] + [0.9] * 20
     bad = per_facility_auprc(rows2, labels2, inverted2, baseline_auprc=0.3)
     assert bad["checked"] is True and bad["failures"]
     # 缺 facility 列 → 降级跳过

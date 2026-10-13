@@ -269,7 +269,9 @@ def test_evaluate_cli_patient_mode_loud_without_group_keys(tmp_path, monkeypatch
 
 
 def _quadratic_auprc_reference(labels, scores) -> float:
-    """旧 O(n²) 前缀和实现——等价性测试的对照（R-RS-11）。"""
+    """旧 O(n²) 前缀和实现——等价性测试的对照（R-RS-11）。
+    注意：其 (score,label) 元组平局排序是 P6 deferred 9 修复前的旧语义，
+    仅用于无平局数据的位级对照；平局数据用 _tie_aware_auprc_reference。"""
     positives = sum(labels)
     pairs = sorted(zip(scores, labels), reverse=True)
     precision_recall = []
@@ -286,6 +288,60 @@ def _quadratic_auprc_reference(labels, scores) -> float:
     return auprc
 
 
+def _tie_aware_auprc_reference(labels: list[int], scores: list[float]) -> float:
+    """独立参照：按分数降序分组、组边界统一累积的 average precision
+    （与 sklearn average_precision_score 同语义，P6 deferred 9）。"""
+    positives = sum(labels)
+    order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    ap = 0.0
+    tp = seen = 0
+    recall_prev = 0.0
+    i = 0
+    while i < len(order):
+        score_value = scores[order[i]]
+        group_tp = group_n = 0
+        while i < len(order) and scores[order[i]] == score_value:
+            group_tp += labels[order[i]]
+            group_n += 1
+            i += 1
+        tp += group_tp
+        seen += group_n
+        recall = tp / positives
+        ap += (tp / seen) * (recall - recall_prev)
+        recall_prev = recall
+    return ap
+
+
+def test_binary_metrics_constant_scores_auprc_is_prevalence():
+    """P6 deferred 9：恒分输入的 AUPRC 必须是 prevalence，
+    不得经 (score,label) 元组平局排序得 1.0。"""
+    from scripts.evaluate_model import binary_metrics
+
+    labels = [1, 0, 1, 0]
+    scores = [0.5, 0.5, 0.5, 0.5]
+    result = binary_metrics(labels, scores, 0.5)
+    assert result["auprc"] == 0.5
+
+
+def test_binary_metrics_auprc_matches_tie_aware_reference():
+    """平局分组口径对照：实现 == 独立参照 == sklearn（三角钉住）。"""
+    import pytest
+    from sklearn.metrics import average_precision_score
+
+    from scripts.evaluate_model import binary_metrics
+
+    cases = [
+        ([1, 0, 1, 0], [0.9, 0.8, 0.7, 0.6]),  # 无平局
+        ([1, 0, 1, 0], [0.5, 0.5, 0.5, 0.5]),  # 全平局
+        ([1, 0, 1, 0, 1], [0.9, 0.9, 0.7, 0.7, 0.7]),  # 部分平局
+        ([1, 1, 0, 0, 0], [0.8, 0.8, 0.8, 0.3, 0.1]),  # 平局组含同类
+    ]
+    for labels, scores in cases:
+        got = binary_metrics(labels, scores, 0.5)["auprc"]
+        assert got == pytest.approx(_tie_aware_auprc_reference(labels, scores), abs=1e-12)
+        assert got == pytest.approx(average_precision_score(labels, scores), abs=1e-12)
+
+
 def test_binary_metrics_auprc_matches_quadratic_reference():
     from random import Random
 
@@ -298,8 +354,8 @@ def test_binary_metrics_auprc_matches_quadratic_reference():
             continue
         scores = [round(rng.random(), 1) for _ in labels]  # 大量平局
         new = binary_metrics(labels, scores, 0.5)["auprc"]
-        old = _quadratic_auprc_reference(labels, scores)
-        assert new == old, f"trial {trial}: {new!r} != {old!r}"  # 整数前缀和 → 位级一致
+        old = _tie_aware_auprc_reference(labels, scores)
+        assert new == old, f"trial {trial}: {new!r} != {old!r}"
 
 
 def test_binary_metrics_handles_100k_rows():

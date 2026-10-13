@@ -1,4 +1,4 @@
-# MedIntel 终版状态（2026-10-13 更新）
+# MedIntel 终版状态（2026-10-13 更新，deferred 清偿轮）
 
 > 新终端会话从这里恢复上下文。计划原文：`docs/superpowers/plans/2026-10-12-medintel-real-scale-optimization.md`（P-Scale 补录版）、`2026-10-10-medintel-p7.md`、`2026-10-10-medintel-p8.md`、`2026-09-28-medintel-p6.md`（及 P0–P5 同目录）；设计 spec：`docs/superpowers/specs/2026-10-12-medintel-real-scale-optimization-design.md`。
 
@@ -6,7 +6,8 @@
 
 - **P-Scale（真实规模优化 G1–G5）已于 2026-10-12 实施完毕**：T1–T8 逐任务 TDD 独立提交（`8657956..HEAD`），18 项执行期裁定（R-RS-1..16、R-RHR-1..2）与任务映射见计划补录文档。
 - **25000 规模端到端演练真跑 passed=True**（936.6s / 预算 1380s 内）：泄漏 0 违规；双门禁全过（ECE 0.0007 / 0.0082）；事件率 4.1%、再入院 12.24%；40 万行 deterioration + 3 院区 45/35/20；holdout 80000/5000；超预算留痕 `evaluate`（132s>120s）与 `report`（263s>60s，见 deferred）。
-- 验证基线：`pytest` → **194 passed + 1 skipped + 2 deselected**（含 1500 规模冒烟 `@slow`，默认执行）；`ruff` 全零；`app/` serving 纯净（新增 `app/cohort.py` 仅标准库）。
+- 验证基线：`pytest` → **223 passed + 1 skipped + 2 deselected**（含 1500 规模冒烟 `@slow`，默认执行）；`ruff` 全零；`make_golden --check` 一致；`app/` serving 纯净（新增 `app/cohort.py` 仅标准库）。
+- **24 项终审 deferred minors 已于 2026-10-13 全部清偿**（21 任务，逐项映射见 `docs/superpowers/plans/2026-10-13-medintel-deferred-minors.md`）。行为修复要点：`binary_metrics` AUPRC 改平局分组口径（恒分→prevalence，sklearn 语义）；**facility 门禁规则改同院区基线比较且阳性下限 5→10**（AUPRC 依赖患病率，跨总体比较统计无效——平局修复暴露的潜伏缺陷）；阈值撞档改拒绝；CV 零阳性折跳过；live readmission 钉首个出院事件（worker+api）；recalibrate 严格 0/1 + gate-input 预检；门禁输入错误统一拒绝语；`top_factors` 的 `__missing` 展示为「基特征缺失」；`training_rows` 只记训练段、校准块增 `n_samples/n_positives`（golden 已重冻结）。
 - **P6 / P7 / P8 状态不变**：56 提交已推送（2026-10-10）；三轮终审结论与 24 项 deferred minors 见下文（仍然有效）。
 - P-Scale 相对 P8 的接口变化：`validate`/`evaluate`/`promote` 新增 `--split`（默认 **patient**，缺分组键响亮报错——既有 holdout CSV 需含 `patient_id` 或 `encounter_id`）；`train_model --input` 吃规模 CSV；`monitor_drift` 输出 `ks/ks_reason` 且对出院源字段 CSV 即时派生；工件 `drift_reference` 新增 `sample`（≤2000/特征）。
 
@@ -19,13 +20,13 @@
 ## 关键运行时事实
 
 - `readmission_30d` 仅出院事件触发单次评分（`as_of` 钉首个出院事件）；demo 种子不再预置 readmission 分数。
-- promote 门禁 = bootstrap CI 下界 ≥ 基线（deterioration→NEWS2、readmission→LACE）+ ECE<0.05 + 亚组灵敏度差≤10%（age 可用时）+ 逐院区 AUPRC≥基线（≥2 院区时）+ 决策曲线平均增益≥0；不可用规则 `skipped` 不判失败，报告在 eval.json `rules`。
+- promote 门禁 = bootstrap CI 下界 ≥ 基线（deterioration→NEWS2、readmission→LACE）+ ECE<0.05 + 亚组灵敏度差≤10%（age 可用时，全体组 max−min）+ 逐院区 AUPRC≥**同院区**基线点估计（≥2 院区、每合格院区 ≥20 行且 ≥10 阳性；全跳过 → unchecked/skipped）+ 决策曲线平均增益≥0；不可用规则 `skipped` 不判失败，报告在 eval.json `rules`。AUPRC 为平局分组口径（恒分输入 = prevalence）。
 - 校准：readmission 默认真 isotonic（cal 段出样本 8 档）；**demo deterioration 触发 R-P7-5a 回退 Platt**（in-sample PAV 仅 2 档，`fallback_reason=isotonic_resolution`）——真实数据块数充足时自动走 isotonic。
 - LightGBM 为 opt-in 挑战者：`scripts/train_model.py --algorithm lightgbm --trials N`；树工件校验严格（缺 trees/未知 algorithm/子索引越界/内部负索引/环 → 载入期响亮拒绝）。
 - 漂移：训练写 `drift_reference`；`scripts/monitor_drift.py`（PSI>0.2 → JSON alert + exit 1，输入 CSV 须含完整 `feature_order` 架构含派生列）；`scripts/recalibrate.py` 只动 `calibration` 块、临时工件过门禁才回写（真实数据务必 `--gate-input` 独立留出集）。
 - 阈值阶梯手算基准 {0.10, 0.20, 0.30}（计划原稿0.25/0.35 是算术错误，已修正）。
 
-## 终审 Deferred Minors（24 项，未修）
+## 终审 Deferred Minors（24 项，已于 2026-10-13 清偿；逐项映射见 `docs/superpowers/plans/2026-10-13-medintel-deferred-minors.md`，以下原文保留供追溯）
 
 **P6（10）**：`training_rows` 记全量非60%；阈值撞档步进后不复检 TPR；`TARGET_THRESHOLDS`/`DEFAULT_THRESHOLDS` 双份硬编码；CV 无阳性测试折 auprc 计0而非跳过；`top_factors` 可能露 `__missing` 裸工程名；active_label 输入含 score/uncertainty 列时重复输出；门禁输入类错误（缺 label 列/非数字/文件不存在）走 traceback 非统一拒绝语；`make_golden.DEFAULT_ARTIFACTS` 与 RiskEngine 默认路径隐式耦合；**`binary_metrics` 恒分 AUPRC 经 (score,label) 元组平局得 1.0（P5 遗留怪癖，修复需同步门禁 fixture）**；校准审计链仅 `fitted_on`。
 
